@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq; // Added for sorting
 
 namespace P3DWeatherEngine
 {
@@ -9,7 +10,7 @@ namespace P3DWeatherEngine
         public string ICAO { get; set; }
         public double Latitude { get; set; }
         public double Longitude { get; set; }
-        public double Elevation { get; set; } // NEW! We need this for the physics math
+        public double Elevation { get; set; }
     }
 
     public class StationLocator
@@ -37,10 +38,7 @@ namespace P3DWeatherEngine
                         double.TryParse(parts[6], out elev);
 
                         _stations.Add(new WeatherStation { 
-                            ICAO = icao, 
-                            Latitude = lat, 
-                            Longitude = lon, 
-                            Elevation = elev 
+                            ICAO = icao, Latitude = lat, Longitude = lon, Elevation = elev 
                         });
                     }
                 }
@@ -48,22 +46,19 @@ namespace P3DWeatherEngine
             Console.WriteLine($"Loaded {_stations.Count} weather stations.");
         }
 
-        // Changed to return the whole WeatherStation object, not just the string
-        public WeatherStation GetNearestStation(double planeLat, double planeLon)
+        // NEW: Returns the Top 3 closest stations along with their distances
+        public List<(WeatherStation Station, double Distance)> GetNearestStations(double planeLat, double planeLon, int count = 3)
         {
-            WeatherStation nearest = null;
-            double minDistance = double.MaxValue;
+            var distances = new List<(WeatherStation Station, double Distance)>();
 
             foreach (var station in _stations)
             {
-                double distance = CalculateHaversineDistance(planeLat, planeLon, station.Latitude, station.Longitude);
-                if (distance < minDistance)
-                {
-                    minDistance = distance;
-                    nearest = station;
-                }
+                double d = CalculateHaversineDistance(planeLat, planeLon, station.Latitude, station.Longitude);
+                distances.Add((station, d));
             }
-            return nearest;
+
+            // Sort by distance (closest first) and take the top 3
+            return distances.OrderBy(x => x.Distance).Take(count).ToList();
         }
 
         private double CalculateHaversineDistance(double lat1, double lon1, double lat2, double lon2)
