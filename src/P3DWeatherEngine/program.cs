@@ -23,7 +23,6 @@ namespace P3DWeatherEngine
 
     class Program
     {
-        // Settings
         const double VISIBILITY_MULTIPLIER = 1.5; 
         const int IDLE_UPDATE_MINUTES = 5;
         const double ATIS_FREQUENCY = 122.00;
@@ -33,28 +32,28 @@ namespace P3DWeatherEngine
         static readonly HttpClient client = new HttpClient();
         static SpeechSynthesizer speechEngine = new SpeechSynthesizer();
 
-        // State Tracking
         static string currentIcao = "";
         static DateTime lastFetchTime = DateTime.MinValue;
-        static bool isAtisPlaying = false; // NEW: Tracks if the radio is actively broadcasting
+        static bool isAtisPlaying = false; 
         
-        // Holds the un-multiplied data for the radio voice loop
         static string atisAirportName = "";
         static int atisRawVisibility = 10;
         static int atisRawTemp = 15;
         static int atisRawDew = 10;
         static string atisRawAltStr = "2992";
-        static int atisCloudHeight = 3000;
-        static string atisCloudType = "FEW";
+        static string atisCloudString = "clear";
+        static string atisWindString = "Wind calm";
+
+        static readonly string[] PhoneticAlphabet = { "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango", "Uniform", "Victor", "Whiskey", "X-ray", "Yankee", "Zulu" };
 
         static void Main(string[] args)
         {
-            Console.WriteLine("=== P3Dv5 Real-Time Weather Engine (v4.1 - Radio Kill Switch) ===");
+            Console.WriteLine("=== P3Dv5 Premium Engine (v17.0 - Optimized Surface & Approach) ===");
 
-            // Configure Voice
             speechEngine.Volume = 100;
             speechEngine.Rate = -1; 
-
+            speechEngine.SelectVoiceByHints(VoiceGender.Male, VoiceAge.Adult);
+            
             string csvPath = "Data/airports.csv"; 
             try { locator.LoadStations(csvPath); }
             catch (Exception ex) { Console.WriteLine($"[ERROR] {ex.Message}"); return; }
@@ -63,6 +62,9 @@ namespace P3DWeatherEngine
             {
                 simconnect = new SimConnect("P3DWeatherEngine", IntPtr.Zero, 0, null, 0);
                 Console.WriteLine("Connected to P3Dv5 SimConnect!");
+
+                simconnect.WeatherSetModeCustom();
+                Console.WriteLine("Simulator locked to Custom Weather mode.");
 
                 simconnect.RegisterDataDefineStruct<PositionData>(DEFINITIONS.AircraftPosition);
                 simconnect.AddToDataDefinition(DEFINITIONS.AircraftPosition, "Plane Latitude", "degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
@@ -74,8 +76,6 @@ namespace P3DWeatherEngine
                 simconnect.OnRecvException += Simconnect_OnRecvException; 
 
                 simconnect.RequestDataOnSimObject(DATA_REQUESTS.ContinuousPositionRequest, DEFINITIONS.AircraftPosition, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_PERIOD.SECOND, SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT, 0, 0, 0);
-
-                Console.WriteLine("Engine running. Waiting for aircraft position and radio signals...");
 
                 while (true)
                 {
@@ -97,37 +97,33 @@ namespace P3DWeatherEngine
             {
                 PositionData pos = (PositionData)data.dwData[0];
                 
-                // 1. CHECK THE CUSTOM ATIS RADIO INTERCEPT WITH KILL SWITCH
                 bool isTunedToAtis = Math.Abs(pos.Com1Frequency - ATIS_FREQUENCY) < 0.01;
-
                 if (isTunedToAtis)
                 {
-                    // Start the loop if it's currently silent
-                    if (speechEngine.State == SynthesizerState.Ready && !string.IsNullOrEmpty(currentIcao))
+                    if (!isAtisPlaying && !string.IsNullOrEmpty(currentIcao))
                     {
-                        string voiceScript = $"{atisAirportName} automated weather observation. " +
-                                             $"Visibility {atisRawVisibility} miles. " +
-                                             $"Sky condition {atisCloudType} at {atisCloudHeight} feet. " +
-                                             $"Temperature {atisRawTemp}. Dewpoint {atisRawDew}. " +
-                                             $"Altimeter {ToAviationDigits(atisRawAltStr)}.";
+                        isAtisPlaying = true; 
+                        string infoLetter = PhoneticAlphabet[DateTime.UtcNow.Hour % 26];
+                        string zuluTime = DateTime.UtcNow.ToString("HHmm");
+                        string voiceScript = $"{atisAirportName} airport information {infoLetter}, {zuluTime} zulu. " +
+                                             $"{atisWindString}. Visibility: {atisRawVisibility}. Sky condition: {atisCloudString}. " +
+                                             $"Temperature: {atisRawTemp}. Dewpoint: {atisRawDew}. Altimeter {ToAviationDigits(atisRawAltStr)}. " +
+                                             $"ILS runway 24 in use. Landing and departing runway 24. VFR aircraft say direction of flight. All aircraft read back hold short instructions. Advise controller on initial contact you have {infoLetter}.";
                         
-                        Console.WriteLine($"\n[RADIO TRANSMISSION] Broadcasting ATIS on {ATIS_FREQUENCY} MHz...");
-                        speechEngine.SpeakAsync(voiceScript); 
-                        isAtisPlaying = true;
+                        Task.Run(() => {
+                            Console.Beep(800, 200); 
+                            System.Threading.Thread.Sleep(200);
+                            speechEngine.Speak(voiceScript);
+                            isAtisPlaying = false; 
+                        });
                     }
                 }
-                else
+                else if (isAtisPlaying)
                 {
-                    // THE KILL SWITCH: If tuned away, instantly cut the audio!
-                    if (isAtisPlaying)
-                    {
-                        speechEngine.SpeakAsyncCancelAll();
-                        isAtisPlaying = false;
-                        Console.WriteLine("\n[RADIO] Tuned away from ATIS. Signal lost.");
-                    }
+                    speechEngine.SpeakAsyncCancelAll();
+                    isAtisPlaying = false;
                 }
 
-                // 2. STANDARD WEATHER TRACKING
                 var nearestStations = locator.GetNearestStations(pos.Latitude, pos.Longitude, 3);
                 if (nearestStations.Count > 0)
                 {
@@ -135,12 +131,11 @@ namespace P3DWeatherEngine
                     bool isNewStation = primaryStation.ICAO != currentIcao;
                     bool isTimeForUpdate = (DateTime.Now - lastFetchTime).TotalMinutes >= IDLE_UPDATE_MINUTES;
 
+                    // Only process heavy logic if the station changes or 5 minutes pass
                     if (isNewStation || isTimeForUpdate)
                     {
-                        Console.WriteLine($"\n--- Triggering Interpolation Update (COM1: {pos.Com1Frequency:F2} MHz) ---");
                         currentIcao = primaryStation.ICAO;
                         lastFetchTime = DateTime.Now;
-
                         await UpdateInterpolatedWeatherAsync(nearestStations);
                     }
                 }
@@ -156,7 +151,7 @@ namespace P3DWeatherEngine
 
             foreach (var item in stations)
             {
-                string url = $"https://aviationweather.gov/api/data/metar?ids={item.Station.ICAO}&format=raw&hours=2";
+                string url = $"https://metar.vatsim.net/{item.Station.ICAO}";
                 try
                 {
                     HttpResponseMessage response = await client.GetAsync(url);
@@ -198,20 +193,48 @@ namespace P3DWeatherEngine
             {
                 interpTemp /= totalWeight; interpDew /= totalWeight; interpAlt /= totalWeight;
 
-                int finalTemp = (int)Math.Round(interpTemp);
-                int finalDew = (int)Math.Round(interpDew);
-                string newTStr = finalTemp < 0 ? "M" + Math.Abs(finalTemp).ToString("D2") : finalTemp.ToString("D2");
-                string newDStr = finalDew < 0 ? "M" + Math.Abs(finalDew).ToString("D2") : finalDew.ToString("D2");
-                
+                atisRawTemp = (int)Math.Round(interpTemp);
+                atisRawDew = (int)Math.Round(interpDew);
                 atisAirportName = primaryStation.ICAO;
-                atisRawTemp = finalTemp;
-                atisRawDew = finalDew;
                 atisRawAltStr = ((int)Math.Round(interpAlt * 100)).ToString("D4");
+
+                var windMatch = Regex.Match(baseMetar, @"(\d{3}|VRB)(\d{2,3})(?:G\d{2,3})?KT");
+                if (windMatch.Success)
+                {
+                    string dir = windMatch.Groups[1].Value;
+                    int spd = int.Parse(windMatch.Groups[2].Value);
+                    if (dir == "000" && spd == 0) atisWindString = "Wind calm";
+                    else if (dir == "VRB") atisWindString = $"Wind variable at {spd}";
+                    else {
+                        string dirSpelled = string.Join(" ", dir.ToCharArray()).Replace("9", "niner");
+                        atisWindString = $"Wind {dirSpelled} at {spd}";
+                    }
+                }
+
+                if (baseMetar.Contains("CAVOK") || baseMetar.Contains("SKC") || baseMetar.Contains("CLR")) { atisCloudString = "clear"; }
+                else 
+                {
+                    List<string> clouds = new List<string>();
+                    bool hasCeiling = false;
+                    foreach (Match m in Regex.Matches(baseMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})"))
+                    {
+                        string type = m.Groups[1].Value;
+                        int h = int.Parse(m.Groups[2].Value) * 100;
+                        string hStr = h.ToString("#,##0"); 
+                        
+                        if (type == "FEW") clouds.Add($"few clouds at {hStr}");
+                        else if (type == "SCT") clouds.Add($"{hStr} scattered");
+                        else if (type == "BKN" && !hasCeiling) { clouds.Add($"ceiling {hStr} broken"); hasCeiling = true; }
+                        else if (type == "BKN") clouds.Add($"{hStr} broken");
+                        else if (type == "OVC" && !hasCeiling) { clouds.Add($"ceiling {hStr} overcast"); hasCeiling = true; }
+                        else if (type == "OVC") clouds.Add($"{hStr} overcast");
+                    }
+                    atisCloudString = clouds.Count > 0 ? string.Join(" ", clouds) : "clear";
+                }
 
                 string cleanMetar = baseMetar;
                 if (cleanMetar.StartsWith("METAR ")) cleanMetar = cleanMetar.Substring(6);
                 if (cleanMetar.StartsWith("SPECI ")) cleanMetar = cleanMetar.Substring(6);
-
                 string[] trends = { " RMK", " NOSIG", " BECMG", " TEMPO" };
                 foreach (string trend in trends)
                 {
@@ -221,14 +244,17 @@ namespace P3DWeatherEngine
                 string[] badWords = { "AUTO ", "COR ", "$ " };
                 foreach (string word in badWords) cleanMetar = cleanMetar.Replace(word, "");
 
+                if (cleanMetar.Contains("CAVOK")) cleanMetar = cleanMetar.Replace("CAVOK", "10SM CLR");
+                if (cleanMetar.Contains("NSC")) cleanMetar = cleanMetar.Replace("NSC", "CLR");
+                if (cleanMetar.Contains("NCD")) cleanMetar = cleanMetar.Replace("NCD", "CLR");
+
                 cleanMetar = Regex.Replace(cleanMetar, @"\s\d+/\d+SM", "SM");
                 cleanMetar = Regex.Replace(cleanMetar, @"\d+/\d+SM", "1SM");
                 cleanMetar = cleanMetar.Replace(" 9999 ", " 10SM ");
 
                 var visMatch = Regex.Match(cleanMetar, @"\s(\d+)SM");
                 if (visMatch.Success) atisRawVisibility = int.Parse(visMatch.Groups[1].Value);
-                else
-                {
+                else {
                     var meterMatch = Regex.Match(cleanMetar, @"\s(\d{4})\s");
                     if (meterMatch.Success && int.TryParse(meterMatch.Groups[1].Value, out int m))
                         atisRawVisibility = (int)Math.Round(m / 1609.34);
@@ -244,36 +270,40 @@ namespace P3DWeatherEngine
                     return $"{(int)Math.Round(int.Parse(m.Groups[1].Value) * VISIBILITY_MULTIPLIER)}SM";
                 });
 
+                string newTStr = atisRawTemp < 0 ? "M" + Math.Abs(atisRawTemp).ToString("D2") : atisRawTemp.ToString("D2");
+                string newDStr = atisRawDew < 0 ? "M" + Math.Abs(atisRawDew).ToString("D2") : atisRawDew.ToString("D2");
                 cleanMetar = Regex.Replace(cleanMetar, @"\sM?\d{2}/M?\d{2}", $" {newTStr}/{newDStr}");
                 cleanMetar = Regex.Replace(cleanMetar, @"[AQ]\d{4}", $"A{atisRawAltStr}");
 
-                var cloudMatch = Regex.Match(cleanMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})");
-                if (cloudMatch.Success)
-                {
-                    atisCloudType = cloudMatch.Groups[1].Value;
-                    atisCloudHeight = int.Parse(cloudMatch.Groups[2].Value) * 100;
-                }
+                int cloudLayerCount = 0;
+                cleanMetar = Regex.Replace(cleanMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?", m => {
+                    if (cloudLayerCount >= 2) return ""; 
+                    cloudLayerCount++;
+                    string type = m.Groups[1].Value;
+                    if (type == "OVC") type = "BKN";
+                    else if (type == "BKN") type = "SCT";
+                    else if (type == "SCT") type = "FEW";
 
-                cleanMetar = Regex.Replace(cleanMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})", m => {
                     int h = int.Parse(m.Groups[2].Value) + (int)Math.Round(primaryStation.Elevation / 100.0);
-                    return $"{m.Groups[1].Value}{h:D3}";
+                    string modifier = m.Groups[3].Success ? m.Groups[3].Value : "";
+                    return $"{type}{h:D3}{modifier}";
                 });
+                
+                cleanMetar = Regex.Replace(cleanMetar, @"\s+", " ").Trim();
 
-                cleanMetar = Regex.Replace(cleanMetar, @"^[A-Z]{4}\s", "GLOB ");
-
-                Console.WriteLine($"VIRTUAL METAR (SIM INJECTED): {cleanMetar}");
-                simconnect.WeatherSetObservation(0, cleanMetar);
+                string globalMetar = Regex.Replace(cleanMetar, @"^[A-Z]{4}\s", "GLOB ");
+                
+                Console.WriteLine($"[INJECTING GLOBAL (VATSIM)]: {globalMetar}");
+                
+                // Fire and forget injection
+                simconnect.WeatherSetObservation(0, globalMetar);
             }
         }
 
         private static string ToAviationDigits(string input)
         {
             string result = "";
-            foreach (char c in input)
-            {
-                if (c == '9') result += "niner ";
-                else result += c + " ";
-            }
+            foreach (char c in input) result += (c == '9' ? "niner " : c + " ");
             return result.Trim();
         }
     }

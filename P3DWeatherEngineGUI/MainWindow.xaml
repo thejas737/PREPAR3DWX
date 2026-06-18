@@ -1,0 +1,154 @@
+﻿<Window x:Class="P3DWeatherEngine.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="P3D Premium Weather Engine" Height="768" Width="1024"
+        Background="#0F172A" WindowStartupLocation="CenterScreen" FontFamily="Segoe UI">
+    
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="50"/> <!-- Tabs -->
+            <RowDefinition Height="40"/> <!-- Search -->
+            <RowDefinition Height="100"/> <!-- Header -->
+            <RowDefinition Height="*"/> <!-- Main Data Columns -->
+            <RowDefinition Height="150"/> <!-- Text Areas -->
+            <RowDefinition Height="30"/> <!-- Status Bar -->
+        </Grid.RowDefinitions>
+
+        <!-- TOP NAVIGATION -->
+        <Border Grid.Row="0" BorderBrush="#1E293B" BorderThickness="0,0,0,2">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="Wx Configuration" Style="{DynamicResource TabButton}"/>
+                <Button Content="Map" Style="{DynamicResource TabButton}"/>
+                <Button Content="Conditions" Background="#2563EB" Foreground="White" BorderThickness="0" Padding="15,10" Margin="0,0,5,0" FontWeight="Bold"/>
+                <Button Content="Flight Plan" Style="{DynamicResource TabButton}"/>
+                <Button Content="Briefing" Style="{DynamicResource TabButton}"/>
+                <Button Content="Settings" Style="{DynamicResource TabButton}"/>
+            </StackPanel>
+        </Border>
+
+        <!-- SEARCH BAR -->
+        <Grid Grid.Row="1" Background="#1E293B" Margin="0,5,0,5">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
+                <TextBlock Text="Station:" Foreground="White" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                <TextBox x:Name="txtSearchIcao" Width="80" Height="24" Background="#0F172A" Foreground="White" BorderBrush="#334155" CharacterCasing="Upper" Padding="2,0"/>
+                <Button Content="Search" Width="60" Height="24" Margin="5,0,0,0" Background="#3B82F6" Foreground="White" BorderThickness="0" Click="BtnSearch_Click"/>
+            </StackPanel>
+            <Button Content="Force Update Sim" HorizontalAlignment="Right" Width="120" Height="24" Margin="0,0,10,0" Background="#10B981" Foreground="White" BorderThickness="0" Click="BtnForceUpdate_Click"/>
+        </Grid>
+
+        <!-- HEADER INFO -->
+        <StackPanel Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <TextBlock x:Name="lblStationName" Text="WAITING FOR SIMCONNECT..." Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+            <Grid Width="600" Margin="0,10,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="Last Updated" Foreground="#94A3B8" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="lblLastUpdate" Text="--:--Z" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="Coordinates" Foreground="#94A3B8" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="lblCoords" Text="-- / --" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                    <TextBlock Text="Elevation" Foreground="#94A3B8" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="lblElevation" Text="-- ft" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+
+        <!-- MIDDLE SECTION (3 COLUMNS) -->
+        <Grid Grid.Row="3" Margin="0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="5*"/>
+                <ColumnDefinition Width="2*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left Metrics -->
+            <StackPanel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="Temperature" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center"/>
+                <TextBlock x:Name="lblTemp" Text="--°C" Foreground="White" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                
+                <TextBlock Text="Dewpoint" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center"/>
+                <TextBlock x:Name="lblDew" Text="--°C" Foreground="White" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                
+                <TextBlock Text="Surface Winds" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center"/>
+                <TextBlock x:Name="lblWind" Text="--- @ -- kts" Foreground="White" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Center Table -->
+            <Border Grid.Column="1" Background="#1E293B" CornerRadius="5" Padding="5">
+                <ListView x:Name="lvAltitudes" Background="Transparent" Foreground="White" BorderThickness="0">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Alt (ft)" Width="100" DisplayMemberBinding="{Binding Alt}"/>
+                            <GridViewColumn Header="Dir" Width="100" DisplayMemberBinding="{Binding Dir}"/>
+                            <GridViewColumn Header="Spd (kt)" Width="100" DisplayMemberBinding="{Binding Spd}"/>
+                            <GridViewColumn Header="TempC" Width="100" DisplayMemberBinding="{Binding Temp}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Border>
+
+            <!-- Right Metrics -->
+            <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="Visibility" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center"/>
+                <TextBlock x:Name="lblVis" Text="-- SM" Foreground="White" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                
+                <TextBlock Text="Altimeter" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center"/>
+                <TextBlock x:Name="lblPressure" Text="---- / --.--" Foreground="White" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                
+                <TextBlock Text="Conditions" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center"/>
+                <TextBlock x:Name="lblConditions" Text="--" Foreground="#60A5FA" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- RAW TEXT AREAS -->
+        <Grid Grid.Row="4" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            
+            <Border Grid.Column="0" Background="#1E293B" Margin="0,0,5,0" CornerRadius="5" Padding="5">
+                <Grid>
+                    <TextBlock Text="VATSIM METAR" Foreground="#94A3B8" FontSize="12" Margin="5"/>
+                    <TextBox x:Name="txtMetar" Margin="0,25,0,0" Background="Transparent" Foreground="White" BorderThickness="0" TextWrapping="Wrap" IsReadOnly="True" FontSize="13"/>
+                </Grid>
+            </Border>
+            
+            <Border Grid.Column="1" Background="#1E293B" Margin="5,0,0,0" CornerRadius="5" Padding="5">
+                <Grid>
+                    <TextBlock Text="NOAA TAF (Forecast)" Foreground="#94A3B8" FontSize="12" Margin="5"/>
+                    <TextBox x:Name="txtTaf" Margin="0,25,0,0" Background="Transparent" Foreground="White" BorderThickness="0" TextWrapping="Wrap" IsReadOnly="True" FontSize="13" VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- STATUS BAR -->
+        <Grid Grid.Row="5" Background="#0F172A">
+            <TextBlock x:Name="lblStatus" Text="Sim Connection: Waiting for Simulator..." Foreground="#94A3B8" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="10,0"/>
+            <TextBlock x:Name="lblSimTime" Text="Active Time: --:--Z" Foreground="#94A3B8" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="10,0"/>
+        </Grid>
+    </Grid>
+
+    <Window.Resources>
+        <Style x:Key="TabButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#94A3B8"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="15,10"/>
+            <Setter Property="Margin" Value="0,0,5,0"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+</Window>
