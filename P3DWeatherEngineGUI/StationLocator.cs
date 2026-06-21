@@ -1,13 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq; // Added for sorting
+using System.Linq;
 
 namespace P3DWeatherEngine
 {
     public class WeatherStation
     {
-        public string ICAO { get; set; }
+        public string ICAO { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string IATA { get; set; } = "";
+
         public double Latitude { get; set; }
         public double Longitude { get; set; }
         public double Elevation { get; set; }
@@ -15,61 +18,105 @@ namespace P3DWeatherEngine
 
     public class StationLocator
     {
-        private List<WeatherStation> _stations = new List<WeatherStation>();
+        private readonly List<WeatherStation> _stations = new();
         private const double EarthRadiusNm = 3440.065;
 
         public void LoadStations(string csvFilePath)
         {
             Console.WriteLine("Loading airport database...");
-            var lines = File.ReadAllLines(csvFilePath);
-            
-            for (int i = 1; i < lines.Length; i++) 
-            {
-                var parts = lines[i].Split(',');
-                if (parts.Length > 6)
-                {
-                    string icao = parts[1].Trim('"'); 
-                    
-                    if (icao.Length == 4 && 
-                        double.TryParse(parts[4], out double lat) && 
-                        double.TryParse(parts[5], out double lon))
-                    {
-                        double elev = 0;
-                        double.TryParse(parts[6], out elev);
 
-                        _stations.Add(new WeatherStation { 
-                            ICAO = icao, Latitude = lat, Longitude = lon, Elevation = elev 
-                        });
-                    }
+            if (!File.Exists(csvFilePath))
+            {
+                Console.WriteLine($"Airport database not found: {csvFilePath}");
+                return;
+            }
+
+            var lines = File.ReadAllLines(csvFilePath);
+
+            for (int i = 1; i < lines.Length; i++)
+            {
+                try
+                {
+                    var parts = lines[i].Split(',');
+
+                    // Ensure sufficient columns exist
+                    if (parts.Length < 14)
+                        continue;
+
+                    string icao = parts[1].Trim('"');
+                    string airportName = parts[3].Trim('"');
+                    string iata = parts[13].Trim('"');
+
+                    if (icao.Length != 4)
+                        continue;
+
+                    if (!double.TryParse(parts[4], out double lat))
+                        continue;
+
+                    if (!double.TryParse(parts[5], out double lon))
+                        continue;
+
+                    double elev = 0;
+                    double.TryParse(parts[6], out elev);
+
+                    _stations.Add(new WeatherStation
+                    {
+                        ICAO = icao,
+                        Name = airportName,
+                        IATA = iata,
+                        Latitude = lat,
+                        Longitude = lon,
+                        Elevation = elev
+                    });
+                }
+                catch
+                {
+                    // Skip malformed rows
+                    continue;
                 }
             }
+
             Console.WriteLine($"Loaded {_stations.Count} weather stations.");
         }
 
-        // NEW: Returns the Top 3 closest stations along with their distances
-        public List<(WeatherStation Station, double Distance)> GetNearestStations(double planeLat, double planeLon, int count = 3)
+        public List<(WeatherStation Station, double Distance)> GetNearestStations(
+            double planeLat,
+            double planeLon,
+            int count = 3)
         {
-            var distances = new List<(WeatherStation Station, double Distance)>();
-
-            foreach (var station in _stations)
-            {
-                double d = CalculateHaversineDistance(planeLat, planeLon, station.Latitude, station.Longitude);
-                distances.Add((station, d));
-            }
-
-            // Sort by distance (closest first) and take the top 3
-            return distances.OrderBy(x => x.Distance).Take(count).ToList();
+            return _stations
+                .Select(station => (
+                    Station: station,
+                    Distance: CalculateHaversineDistance(
+                        planeLat,
+                        planeLon,
+                        station.Latitude,
+                        station.Longitude)))
+                .OrderBy(x => x.Distance)
+                .Take(count)
+                .ToList();
         }
 
-        private double CalculateHaversineDistance(double lat1, double lon1, double lat2, double lon2)
+        private double CalculateHaversineDistance(
+            double lat1,
+            double lon1,
+            double lat2,
+            double lon2)
         {
             double dLat = ToRadians(lat2 - lat1);
             double dLon = ToRadians(lon2 - lon1);
+
             lat1 = ToRadians(lat1);
             lat2 = ToRadians(lat2);
-            double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) + Math.Sin(dLon / 2) * Math.Sin(dLon / 2) * Math.Cos(lat1) * Math.Cos(lat2);
+
+            double a =
+                Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                Math.Sin(dLon / 2) * Math.Sin(dLon / 2) *
+                Math.Cos(lat1) * Math.Cos(lat2);
+
             double c = 2 * Math.Asin(Math.Sqrt(a));
-            return EarthRadiusNm * c; 
+
+            return EarthRadiusNm * c;
         }
 
         private double ToRadians(double angle)

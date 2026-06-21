@@ -8,6 +8,7 @@ using System.Speech.Synthesis;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
+using System.Text.Json; // ADDED FOR OPEN-METEO PARSING
 using LockheedMartin.Prepar3D.SimConnect;
 using Microsoft.Web.WebView2.Core; 
 using P3DWeatherEngine; 
@@ -30,6 +31,22 @@ namespace P3DWeatherEngineGUI
             public double Altitude;
             public double Com1Frequency; 
         }
+
+        // --- WINDS ALOFT CACHE STRUCTURE ---
+        private struct WindsAloftCache
+        {
+            public int Dir10k; public int Spd10k; // 700 hPa
+            public int Dir24k; public int Spd24k; // 500 hPa
+            public int Dir36k; public int Spd36k; // 250 hPa
+        }
+        private WindsAloftCache _windsCache;
+        private DateTime _lastWindsFetchTime = DateTime.MinValue;
+        private bool _isFetchingWinds = false;
+
+        // --- SIMCONNECT CONNECTION MANAGER FIELDS ---
+        private IntPtr _windowHandle;
+        private bool _isSimConnected = false;
+        private System.Windows.Threading.DispatcherTimer _reconnectTimer = new System.Windows.Threading.DispatcherTimer();
 
         const double VISIBILITY_MULTIPLIER = 1.5; 
         const int IDLE_UPDATE_MINUTES = 5;
@@ -71,9 +88,9 @@ namespace P3DWeatherEngineGUI
                 locator.LoadStations("Data/airports.csv");
                 Log("Navigation database loaded successfully.");
             }
-            catch (Exception ex) 
-            { 
-                Log($"[ERROR] Missing airports.csv: {ex.Message}"); 
+            catch (Exception ex) {
+                MessageBox.Show("SkyNexus Critical Startup Error:\n\n" + ex.Message + "\n\n" + ex.StackTrace, "Startup Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                Application.Current.Shutdown();
             }
 
             Log("Initializing WebView2 Map Engine...");
@@ -100,40 +117,37 @@ namespace P3DWeatherEngineGUI
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            HwndSource source = HwndSource.FromHwnd(hwnd);
+            _windowHandle = new WindowInteropHelper(this).Handle;
+            HwndSource source = HwndSource.FromHwnd(_windowHandle);
             source.AddHook(new HwndSourceHook(WndProc));
 
-            ConnectToSim(hwnd);
+            // Start the automatic connection polling timer
+            _reconnectTimer.Interval = TimeSpan.FromSeconds(5);
+            _reconnectTimer.Tick += ReconnectTimer_Tick;
+            _reconnectTimer.Start();
+
+            ConnectToSim();
         }
 
-        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        private void ReconnectTimer_Tick(object? sender, EventArgs e)
         {
-            if (msg == WM_USER_SIMCONNECT && simconnect != null)
-            {
-                try { simconnect.ReceiveMessage(); }
-                catch 
-                { 
-                    simconnect = null;
-                    lblStatus.Text = "Sim Connection: Disconnected / Waiting...";
-                    lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightCoral);
-                    UpdateMap(0, 0, true); 
-                    Log("SimConnect connection lost. Re-attempting...");
-                    ConnectToSim(hwnd);
-                }
-            }
-            return IntPtr.Zero;
+            if (!_isSimConnected) ConnectToSim();
         }
 
-        private void ConnectToSim(IntPtr hwnd)
+        private void ConnectToSim()
         {
+            if (_isSimConnected) return; 
+
             try
             {
-                Log("Attempting connection to Prepar3D via SimConnect...");
-                simconnect = new SimConnect("P3DWeatherEngine_GUI", hwnd, WM_USER_SIMCONNECT, null, 0);
+                simconnect = new SimConnect("SkyNexus_Engine", _windowHandle, WM_USER_SIMCONNECT, null, 0);
+                _isSimConnected = true;
                 
-                lblStatus.Text = "Sim Connection: CONNECTED TO P3D";
-                lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightGreen);
+                Dispatcher.Invoke(() => {
+                    lblStatus.Text = "Sim Connection: CONNECTED TO P3D";
+                    lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightGreen);
+                });
+                
                 Log("Connection established. Enforcing Custom Weather Mode.");
 
                 simconnect.WeatherSetModeCustom();
@@ -144,12 +158,87 @@ namespace P3DWeatherEngineGUI
                 simconnect.AddToDataDefinition(DEFINITIONS.AircraftPosition, "Plane Altitude", "feet", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
                 simconnect.AddToDataDefinition(DEFINITIONS.AircraftPosition, "COM ACTIVE FREQUENCY:1", "Megahertz", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
 
+                simconnect.OnRecvQuit += Simconnect_OnRecvQuit; 
                 simconnect.OnRecvSimobjectData += Simconnect_OnRecvSimobjectData;
                 simconnect.OnRecvException += Simconnect_OnRecvException; 
 
                 simconnect.RequestDataOnSimObject(DATA_REQUESTS.ContinuousPositionRequest, DEFINITIONS.AircraftPosition, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_PERIOD.SECOND, SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT, 0, 0, 0);
             }
-            catch (Exception) { /* Silent wait for P3D */ }
+            catch (Exception) 
+            { 
+                simconnect = null;
+                _isSimConnected = false;
+
+                Dispatcher.Invoke(() => {
+                    if (!lblStatus.Text.Contains("Searching"))
+                    {
+                        lblStatus.Text = "Sim Connection: Searching for Simulator...";
+                        lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightCoral);
+                    }
+                });
+            }
+        }
+
+        private void Simconnect_OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
+        {
+            Log("Simulator closed by user. Detaching engine...");
+            DisconnectSim();
+        }
+
+        private void DisconnectSim()
+        {
+            if (simconnect != null)
+            {
+                try { simconnect.Dispose(); } catch { }
+                simconnect = null;
+            }
+            
+            _isSimConnected = false;
+            
+            Dispatcher.Invoke(() => {
+                lblStatus.Text = "Sim Connection: Searching for Simulator...";
+                lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightCoral);
+                lblSimTime.Text = "Active Time: --:--Z";
+
+                lblIata.Text = "---";
+                lblStationName.Text = "WAITING FOR SIMCONNECT...";
+                lblAirportName.Text = "Simulator Connection Pending";
+                lblLastUpdate.Text = "--:--Z";
+                lblCoords.Text = "-- / --";
+                lblElevation.Text = "-- ft";
+
+                lblTemp.Text = "--°C"; lblTempImp.Text = "--°F";
+                lblDew.Text = "--°C"; lblDewImp.Text = "--°F";
+                lblWind.Text = "--- @ -- kts"; lblWindImp.Text = "-- mph";
+                lblVis.Text = "-- km"; lblVisImp.Text = "-- SM";
+                lblPressure.Text = "---- hPa"; lblPressureImp.Text = "--.-- inHg";
+                lblConditions.Text = "--";
+
+                txtMetar.Text = ""; txtTaf.Text = "";
+
+                lblWind36k.Text = "-- @ -- kts";
+                lblWind24k.Text = "-- @ -- kts";
+                lblWind10k.Text = "-- @ -- kts";
+                lblWindSurf_Aloft.Text = "-- @ -- kts";
+                
+                currentIcao = "";
+                lastFetchTime = DateTime.MinValue;
+                _lastWindsFetchTime = DateTime.MinValue;
+
+                UpdateMap(0, 0, true); 
+            });
+            
+            Log("SimConnect disconnected. UI cleared. Listening for simulator reboot...");
+        }
+
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == WM_USER_SIMCONNECT && simconnect != null && _isSimConnected)
+            {
+                try { simconnect.ReceiveMessage(); }
+                catch { DisconnectSim(); }
+            }
+            return IntPtr.Zero;
         }
 
         private void Simconnect_OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
@@ -165,7 +254,13 @@ namespace P3DWeatherEngineGUI
                 
                 lblSimTime.Text = $"Active Time: {DateTime.UtcNow:HH:mm}Z";
                 
-                // --- UPDATE DYNAMIC AIRCRAFT ICON FOR WINDS ALOFT METRICS ---
+                // --- TRIGGER ASYNC REAL-WORLD WINDS ALOFT FETCH (15 Min Interval) ---
+                if ((DateTime.Now - _lastWindsFetchTime).TotalMinutes >= 15 && !_isFetchingWinds)
+                {
+                    _ = FetchWindsAloftAsync(pos.Latitude, pos.Longitude);
+                }
+
+                // --- UPDATE DYNAMIC AIRCRAFT ICON ---
                 Dispatcher.Invoke(() => {
                     double maxAlt = 40000.0;
                     double currentAlt = pos.Altitude;
@@ -174,7 +269,6 @@ namespace P3DWeatherEngineGUI
                     
                     if (altCanvas.ActualHeight > 0)
                     {
-                        // 30 pixels offset to account for the size of the font icon
                         double bottomPos = (currentAlt / maxAlt) * (altCanvas.ActualHeight - 30); 
                         Canvas.SetBottom(planeIcon, bottomPos);
                     }
@@ -221,7 +315,57 @@ namespace P3DWeatherEngineGUI
             }
         }
 
-        // --- NEW VIEW TOGGLE FOR MAP / WINDS ALOFT ---
+        // --- NEW REAL-WORLD FORECAST FETCH METHOD ---
+        private async Task FetchWindsAloftAsync(double lat, double lon)
+        {
+            _isFetchingWinds = true;
+            try
+            {
+                string url = $"https://api.open-meteo.com/v1/forecast?latitude={lat:F4}&longitude={lon:F4}&hourly=wind_speed_250hPa,wind_direction_250hPa,wind_speed_500hPa,wind_direction_500hPa,wind_speed_700hPa,wind_direction_700hPa&wind_speed_unit=kn&forecast_days=1";
+                HttpResponseMessage response = await client.GetAsync(url);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string json = await response.Content.ReadAsStringAsync();
+                    using (JsonDocument doc = JsonDocument.Parse(json))
+                    {
+                        var hourly = doc.RootElement.GetProperty("hourly");
+                        int currentHour = DateTime.UtcNow.Hour; // Maps exactly to 0-23 array index
+
+                        _windsCache.Spd36k = (int)Math.Round(hourly.GetProperty("wind_speed_250hPa")[currentHour].GetDouble());
+                        _windsCache.Dir36k = (int)Math.Round(hourly.GetProperty("wind_direction_250hPa")[currentHour].GetDouble());
+                        
+                        _windsCache.Spd24k = (int)Math.Round(hourly.GetProperty("wind_speed_500hPa")[currentHour].GetDouble());
+                        _windsCache.Dir24k = (int)Math.Round(hourly.GetProperty("wind_direction_500hPa")[currentHour].GetDouble());
+                        
+                        _windsCache.Spd10k = (int)Math.Round(hourly.GetProperty("wind_speed_700hPa")[currentHour].GetDouble());
+                        _windsCache.Dir10k = (int)Math.Round(hourly.GetProperty("wind_direction_700hPa")[currentHour].GetDouble());
+
+                        _lastWindsFetchTime = DateTime.Now;
+                        Log($"[NOAA GRIB] Real-World Winds Aloft updated. Core Jetstream (FL360): {_windsCache.Dir36k:D3} @ {_windsCache.Spd36k}kts");
+
+                        Dispatcher.Invoke(() => {
+                            lblWind36k.Text = $"{_windsCache.Dir36k:D3} @ {_windsCache.Spd36k} kts";
+                            lblWind24k.Text = $"{_windsCache.Dir24k:D3} @ {_windsCache.Spd24k} kts";
+                            lblWind10k.Text = $"{_windsCache.Dir10k:D3} @ {_windsCache.Spd10k} kts";
+                        });
+                    }
+                }
+                else
+                {
+                    Log($"[API ERROR] Open-Meteo returned status: {response.StatusCode}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[API WARNING] Real-World Winds Aloft fetch failed: {ex.Message}");
+            }
+            finally
+            {
+                _isFetchingWinds = false;
+            }
+        }
+
         private void BtnToggleView_Click(object sender, RoutedEventArgs e)
         {
             if (mapBrowser.Visibility == Visibility.Visible)
@@ -394,10 +538,9 @@ namespace P3DWeatherEngineGUI
                     atisRawTemp = (int)Math.Round(interpTemp);
                     atisRawDew = (int)Math.Round(interpDew);
                     
-                    // --- IATA AND NAME EXTRACTION (Reflection safe-check) ---
-                    var type = primaryStation.GetType();
-                    string iata = type.GetProperty("IATA")?.GetValue(primaryStation, null)?.ToString();
-                    string name = type.GetProperty("Name")?.GetValue(primaryStation, null)?.ToString();
+                    // --- IATA AND NAME EXTRACTION ---
+                    string? iata = string.IsNullOrWhiteSpace(primaryStation.IATA) ? null : primaryStation.IATA.Trim();
+                    string? name = string.IsNullOrWhiteSpace(primaryStation.Name) ? null : primaryStation.Name.Trim();
                     
                     lblIata.Text = string.IsNullOrEmpty(iata) ? "---" : iata;
                     lblAirportName.Text = string.IsNullOrEmpty(name) ? "Airport Data Available" : name;
@@ -502,7 +645,6 @@ namespace P3DWeatherEngineGUI
         {
             if (string.IsNullOrWhiteSpace(rawMetar)) return "";
 
-            // --- THERMODYNAMIC EXTRACTION ---
             int localTemp = 15;
             int localDew = 10;
             var tempDewMatch = Regex.Match(rawMetar, @"(?:^|\s)(M?\d{2})/(M?\d{2})(?:\s|$)");
@@ -514,7 +656,6 @@ namespace P3DWeatherEngineGUI
                 localDew = dStr.StartsWith("M") ? -int.Parse(dStr.Substring(1)) : int.Parse(dStr);
             }
 
-            // --- PHASE 1: THE SANITIZER ---
             int rmkIndex = rawMetar.IndexOf(" RMK ");
             if (rmkIndex != -1) rawMetar = rawMetar.Substring(0, rmkIndex);
 
@@ -531,7 +672,6 @@ namespace P3DWeatherEngineGUI
                 rawMetar = rawMetar.Replace("CAVOK", "10SM CLR");
             }
 
-            // --- PHASE 2: THE LEXER & WINDS ALOFT GENERATOR ---
             string[] tokens = rawMetar.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             List<string> safeTokens = new List<string>();
 
@@ -549,7 +689,7 @@ namespace P3DWeatherEngineGUI
                 if (token.StartsWith("R") && token.Contains("/") && (token.EndsWith("FT") || token.EndsWith("M") || Regex.IsMatch(token, @"\d{4}"))) continue;
                 if (token.Contains("&A")) continue; 
 
-                // --- 1. WINDS ALOFT & JETSTREAM GENERATOR ---
+                // --- 1. WINDS ALOFT & JETSTREAM INJECTOR (REAL DATA) ---
                 if (Regex.IsMatch(token, @"^(\d{3}|VRB)(\d{2,3})(?:G\d{2,3})?KT$"))
                 {
                     safeTokens.Add(token); 
@@ -558,35 +698,26 @@ namespace P3DWeatherEngineGUI
                     if (wMatch.Success)
                     {
                         string dirStr = wMatch.Groups[1].Value;
-                        int baseDir = dirStr == "VRB" ? new Random().Next(250, 300) : int.Parse(dirStr); 
-                        if (baseDir == 0) baseDir = new Random().Next(250, 300); 
                         int baseSpd = int.Parse(wMatch.Groups[2].Value);
 
-                        int dir10 = (baseDir + 15) % 360; if (dir10 == 0) dir10 = 360;
-                        int spd10 = baseSpd + 20 + new Random().Next(0, 10);
-                        int alt10m = (int)Math.Round(10000 * 0.3048);
-                        safeTokens.Add($"{dir10:D3}{spd10:D2}KT&A{alt10m}");
-
-                        int dir24 = (baseDir + 30) % 360; if (dir24 == 0) dir24 = 360;
-                        int spd24 = spd10 + 35 + new Random().Next(0, 15);
-                        int alt24m = (int)Math.Round(24000 * 0.3048);
-                        safeTokens.Add($"{dir24:D3}{spd24:D2}KT&A{alt24m}");
-
-                        int dir36 = (baseDir + 40) % 360; if (dir36 == 0) dir36 = 360;
-                        int spd36 = spd24 + 40 + new Random().Next(0, 20);
-                        if (spd36 > 150) spd36 = 150; 
-                        int alt36m = (int)Math.Round(36000 * 0.3048);
-                        safeTokens.Add($"{dir36:D3}{spd36:D2}KT&A{alt36m}");
-
-                        // Push data to the UI Panel
                         Dispatcher.Invoke(() => {
-                            lblWindSurf_Aloft.Text = $"{baseDir:D3} @ {baseSpd} kts";
-                            lblWind10k.Text = $"{dir10:D3} @ {spd10} kts";
-                            lblWind24k.Text = $"{dir24:D3} @ {spd24} kts";
-                            lblWind36k.Text = $"{dir36:D3} @ {spd36} kts";
+                            lblWindSurf_Aloft.Text = $"{(dirStr == "VRB" ? "VRB" : int.Parse(dirStr).ToString("D3"))} @ {baseSpd} kts";
                         });
 
-                        Log($"[3D ENGINE] Procedural Jetstream built. Core: {dir36:D3} @ {spd36}kts at FL360.");
+                        // Inject the cached real-world winds aloft
+                        if (_windsCache.Spd10k > 0 || _windsCache.Spd24k > 0 || _windsCache.Spd36k > 0)
+                        {
+                            int alt10m = (int)Math.Round(10000 * 0.3048);
+                            safeTokens.Add($"{_windsCache.Dir10k:D3}{_windsCache.Spd10k:D2}KT&A{alt10m}");
+
+                            int alt24m = (int)Math.Round(24000 * 0.3048);
+                            safeTokens.Add($"{_windsCache.Dir24k:D3}{_windsCache.Spd24k:D2}KT&A{alt24m}");
+
+                            int alt36m = (int)Math.Round(36000 * 0.3048);
+                            safeTokens.Add($"{_windsCache.Dir36k:D3}{_windsCache.Spd36k:D2}KT&A{alt36m}");
+                            
+                            Log($"[LEXER] Appending synchronized forecast winds-aloft layers.");
+                        }
                     }
                     continue;
                 }
@@ -689,7 +820,6 @@ namespace P3DWeatherEngineGUI
                 else if (typeCloud == "BKN") typeCloud = "SCT";
                 else if (typeCloud == "SCT") typeCloud = "FEW";
 
-                // VOLUMETRIC CLOUD GEOMETRY GENERATOR 
                 if (string.IsNullOrEmpty(volumetricTag) && (typeCloud == "SCT" || typeCloud == "BKN" || typeCloud == "OVC" || typeCloud == "FEW"))
                 {
                     if (isHighEnergy && hasPrecipitation) 
@@ -724,5 +854,9 @@ namespace P3DWeatherEngineGUI
             foreach (char c in input) result += (c == '9' ? "niner " : c + " ");
             return result.Trim();
         }
+        // --- CUSTOM TITLE BAR CONTROLS ---
+        private void TitleBarClose_Click(object sender, RoutedEventArgs e) => Close();
+        private void TitleBarMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+        private void TitleBarMaximize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     }
 }

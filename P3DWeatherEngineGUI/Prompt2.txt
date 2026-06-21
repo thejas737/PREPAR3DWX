@@ -1,0 +1,129 @@
+The SimConnect DLL architecture issue has been fixed and SkyNexus now launches correctly. However, a new behavior has been identified:
+
+Current Issue
+
+SkyNexus only connects to Prepar3D if P3D is already fully loaded before the weather engine is started.
+
+Example:
+
+✅ Works:
+
+Launch P3D
+Load into a flight
+Launch SkyNexus
+SimConnect connects successfully
+
+❌ Does not work:
+
+Launch SkyNexus
+Launch P3D afterwards
+SkyNexus never connects
+
+❌ Also does not work:
+
+Launch P3D
+While P3D is still loading, launch SkyNexus
+Initial SimConnect connection attempt fails
+SkyNexus never reconnects
+
+Root Cause
+
+The application currently appears to attempt SimConnect connection only once during startup (via ConnectToSim() in the startup initialization flow).
+
+When P3D is still loading, the SimConnect server is not yet available even though Prepar3D.exe is already running. The initial connection attempt therefore fails and SkyNexus never retries.
+
+Required Changes
+
+Implement a robust automatic SimConnect connection management system.
+
+
+
+1. Add Automatic Reconnection Logic
+Create a background timer (DispatcherTimer or equivalent).
+Run every 5 seconds.
+If SimConnect is not connected, attempt reconnection automatically.
+Continue retrying indefinitely until connection succeeds.
+
+
+
+2. Add Connection State Tracking
+
+Introduce a clear connection state variable such as:
+
+bool _isSimConnected;
+
+or an equivalent mechanism.
+
+The reconnect timer should only attempt a new connection when no active SimConnect session exists.
+
+
+
+3. Make Connection Attempts Non-Fatal
+
+Connection failures should never:
+
+Crash the application
+Freeze the UI
+Generate unhandled exceptions
+
+Wrap connection attempts in proper try/catch blocks and log failures silently.
+
+
+
+4. Handle Simulator Startup After SkyNexus
+
+The following workflow must be supported:
+
+Launch SkyNexus
+Leave SkyNexus running
+Launch P3D later
+SkyNexus automatically detects availability
+SimConnect connects without user intervention
+
+
+5. Handle P3D Loading State
+
+The reconnect mechanism should account for the fact that:
+
+Prepar3D.exe may already exist
+SimConnect may still be unavailable
+Multiple connection attempts may fail during loading
+
+The application should continue retrying until SimConnect becomes available.
+
+
+
+6. Handle Simulator Shutdown
+
+If P3D is closed:
+
+Detect SimConnect disconnection
+Clean up existing SimConnect objects
+Set connection state back to disconnected
+Resume automatic reconnection attempts
+
+This should allow:
+
+Start SkyNexus
+Start P3D
+Connect
+Close P3D
+Reconnect automatically when P3D is launched again
+
+
+
+7. UI Status Indicator
+
+Update the existing simulator status display to show accurate states such as:
+
+Disconnected
+Connecting...
+Connected
+
+The status should update dynamically as connection state changes.
+
+Goal
+
+SkyNexus should behave similarly to professional flight simulation utilities (Active Sky, FSUIPC, vPilot, etc.), remaining open continuously and automatically connecting/reconnecting to Prepar3D whenever SimConnect becomes available, without requiring the user to restart the weather engine.
+
+Do not modify any weather-generation logic. Restrict changes only to SimConnect connection management, reconnection handling, disconnect detection, and status updates.
