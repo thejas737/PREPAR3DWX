@@ -854,5 +854,9 @@ namespace P3DWeatherEngineGUI
             foreach (char c in input) result += (c == '9' ? "niner " : c + " ");
             return result.Trim();
         }
+        // --- CUSTOM TITLE BAR CONTROLS ---
+        private void TitleBarClose_Click(object sender, RoutedEventArgs e) => Close();
+        private void TitleBarMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+        private void TitleBarMaximize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     }
 }

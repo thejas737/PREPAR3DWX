@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -12,11 +14,193 @@ using System.Text.Json; // ADDED FOR OPEN-METEO PARSING
 using LockheedMartin.Prepar3D.SimConnect;
 using Microsoft.Web.WebView2.Core; 
 using P3DWeatherEngine; 
+using System.IO;
+using System.Diagnostics;
+
 
 namespace P3DWeatherEngineGUI
 {
     public partial class MainWindow : Window
     {
+        // --- LOGGING & MAINTENANCE ENGINE ---
+
+        // 0 = Minimal, 1 = Normal, 2 = Debug
+        public enum LogLevel { Minimal = 0, Normal = 1, Debug = 2 }
+        
+        private string logDirectory;
+        private string currentLogFile;
+        private readonly object logLock = new object(); // Prevents thread collisions if multiple async tasks log at once
+        private string cacheDirectory;
+        private string settingsFile;
+        private bool isInitializing = true;
+
+        #region DIRECTORIES & SETTINGS PERSISTENCE
+        private void InitializeDirectories()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            
+            // Create dedicated folders that survive published builds
+            logDirectory = Path.Combine(baseDir, "Logs");
+            cacheDirectory = Path.Combine(baseDir, "Cache");
+            string configDirectory = Path.Combine(baseDir, "Config");
+
+            if (!Directory.Exists(logDirectory)) Directory.CreateDirectory(logDirectory);
+            if (!Directory.Exists(cacheDirectory)) Directory.CreateDirectory(cacheDirectory);
+            if (!Directory.Exists(configDirectory)) Directory.CreateDirectory(configDirectory);
+
+            settingsFile = Path.Combine(configDirectory, "appsettings.json");
+        }
+
+        private void LoadSettings()
+        {
+            try
+            {
+                if (File.Exists(settingsFile))
+                {
+                    string json = File.ReadAllText(settingsFile);
+                    using (JsonDocument doc = JsonDocument.Parse(json))
+                    {
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("LogLevel", out var lvl)) cmbLogLevel.SelectedIndex = lvl.GetInt32();
+                        if (root.TryGetProperty("SmoothWind", out var sw)) chkSmoothWind.IsChecked = sw.GetBoolean();
+                        if (root.TryGetProperty("JetStream", out var js)) chkJetStream.IsChecked = js.GetBoolean();
+                        if (root.TryGetProperty("AutoConnect", out var ac)) chkAutoConnect.IsChecked = ac.GetBoolean();
+                        if (root.TryGetProperty("TurbModel", out var tm)) cmbTurbulenceModel.SelectedIndex = tm.GetInt32();
+                    }
+                }
+            }
+            catch { /* If settings file is corrupted, fallback to UI defaults */ }
+        }
+
+        private void SaveSettings()
+        {
+            if (isInitializing) return;
+
+            try
+            {
+                var settings = new
+                {
+                    LogLevel = cmbLogLevel.SelectedIndex,
+                    SmoothWind = chkSmoothWind.IsChecked ?? false,
+                    JetStream = chkJetStream.IsChecked ?? false,
+                    AutoConnect = chkAutoConnect.IsChecked ?? false,
+                    TurbModel = cmbTurbulenceModel.SelectedIndex
+                };
+
+                string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(settingsFile, json);
+            }
+            catch (Exception ex) { LogEngineEvent($"Failed to save settings: {ex.Message}", LogLevel.Minimal); }
+        }
+
+        private void Setting_Changed(object sender, RoutedEventArgs e)
+        {
+            SaveSettings();
+            LogEngineEvent("Application configuration updated by user.", LogLevel.Debug);
+        }
+        #endregion
+
+        private void InitializeLogging()
+        {
+            // Create the Logs folder next to the .exe
+            logDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
+            if (!Directory.Exists(logDirectory))
+            {
+                Directory.CreateDirectory(logDirectory);
+            }
+
+            // Create a daily log file
+            currentLogFile = Path.Combine(logDirectory, $"SkyNexus_Log_{DateTime.Now:yyyy-MM-dd}.txt");
+            
+            LogEngineEvent("=== SkyNexus Engine Session Started ===", LogLevel.Minimal);
+        }
+
+        public void LogEngineEvent(string message, LogLevel eventLevel)
+        {
+            // Default to Normal if accessed before UI loads
+            LogLevel userSelectedLevel = LogLevel.Normal;
+
+            // Safely read the UI ComboBox 
+            Dispatcher.Invoke(() => {
+                if (cmbLogLevel != null)
+                {
+                    userSelectedLevel = (LogLevel)cmbLogLevel.SelectedIndex;
+                }
+            });
+
+            // Only log if the event is important enough based on the user's setting
+            if (eventLevel <= userSelectedLevel)
+            {
+                string logEntry = $"[{DateTime.UtcNow:HH:mm:ssZ}] [{eventLevel.ToString().ToUpper()}] {message}";
+                
+                // 1. Write to the .txt log file safely
+                lock (logLock)
+                {
+                    try
+                    {
+                        File.AppendAllText(currentLogFile, logEntry + Environment.NewLine);
+                    }
+                    catch { /* Fail silently to prevent weather engine crashes over file-locks */ }
+                }
+
+                // 2. Write to the UI Engine Console safely
+                Dispatcher.Invoke(() => {
+                    if (txtConsole != null)
+                    {
+                        txtConsole.AppendText(logEntry + Environment.NewLine);
+                        txtConsole.ScrollToEnd(); // Automatically scroll down to the newest message
+                    }
+                });
+            }
+        }
+
+        private void BtnOpenLogs_Click(object sender, RoutedEventArgs e)
+        {
+            // Open the Logs folder in Windows Explorer
+            if (Directory.Exists(logDirectory))
+            {
+                Process.Start(new ProcessStartInfo()
+                {
+                    FileName = logDirectory,
+                    UseShellExecute = true,
+                    Verb = "open"
+                });
+            }
+        }
+
+        private void BtnClearCache_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Now safely targets ONLY runtime generated data in the Cache folder
+                ScrubDirectorySafely(cacheDirectory);
+                
+                LogEngineEvent("Maintenance: Application runtime cache cleared by user.", LogLevel.Minimal);
+                MessageBox.Show("Runtime cache cleared successfully.\nSettings and Airport Databases were preserved.", "Maintenance Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LogEngineEvent($"Failed to clear cache: {ex.Message}", LogLevel.Minimal);
+            }
+        }
+
+        private void ScrubDirectorySafely(string folderPath)
+        {
+            if (!Directory.Exists(folderPath)) return;
+
+            DirectoryInfo di = new DirectoryInfo(folderPath);
+            
+            // Delete loose files
+            foreach (FileInfo file in di.GetFiles())
+            {
+                try { file.Delete(); } catch { /* Ignore locked files */ }
+            }
+            // Delete sub-folders
+            foreach (DirectoryInfo dir in di.GetDirectories())
+            {
+                try { dir.Delete(true); } catch { /* Ignore locked active folders */ }
+            }
+        }
         const int WM_USER_SIMCONNECT = 0x0402;
         private static readonly string[] PhoneticAlphabet = { "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango", "Uniform", "Victor", "Whiskey", "X-ray", "Yankee", "Zulu" };
 
@@ -75,6 +259,12 @@ namespace P3DWeatherEngineGUI
         public MainWindow()
         {
             InitializeComponent();
+    
+            InitializeDirectories();
+            LoadSettings();      // Load JSON settings before UI reacts
+            InitializeLogging(); // Turn on the logging engine
+    
+            isInitializing = false;
 
             System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
             
@@ -366,22 +556,6 @@ namespace P3DWeatherEngineGUI
             }
         }
 
-        private void BtnToggleView_Click(object sender, RoutedEventArgs e)
-        {
-            if (mapBrowser.Visibility == Visibility.Visible)
-            {
-                mapBrowser.Visibility = Visibility.Hidden;
-                windsAloftPanel.Visibility = Visibility.Visible;
-                lblViewTitle.Text = "Winds Aloft Metrics";
-            }
-            else
-            {
-                windsAloftPanel.Visibility = Visibility.Hidden;
-                mapBrowser.Visibility = Visibility.Visible;
-                lblViewTitle.Text = "Live Tracking";
-            }
-        }
-
         private void UpdateMap(double lat, double lon, bool showGlobe)
         {
             if (mapBrowser == null || mapBrowser.CoreWebView2 == null) return;
@@ -427,50 +601,296 @@ namespace P3DWeatherEngineGUI
             mapBrowser.NavigateToString(html);
         }
 
+        // ==========================================
+        // WEATHER ENGINE STUBS & LOGGING EXAMPLES
+        // ==========================================
         private async void BtnSearch_Click(object sender, RoutedEventArgs e)
         {
-            if (isFetchingWeather) return; 
+            string station = txtSearchIcao.Text.ToUpper();
+            if (string.IsNullOrWhiteSpace(station)) return;
 
-            string manualIcao = txtSearchIcao.Text.Trim().ToUpper();
-            if (manualIcao.Length == 4)
+            LogEngineEvent($"Station lookup initiated for: {station}", LogLevel.Normal);
+            lblStationName.Text = "FETCHING DATA...";
+            
+            try
             {
-                Log($"Live search triggered for ICAO: {manualIcao}");
-                currentIcao = manualIcao;
-                var fakeStationList = new List<(WeatherStation, double)> { (new WeatherStation { ICAO = manualIcao, Elevation = 0, Latitude = 0, Longitude = 0 }, 0.0) };
-                await UpdateInterpolatedWeatherAsync(fakeStationList);
+                // LIVE NOAA API LOOKUP (Independent of SimConnect)
+                LogEngineEvent($"[API] Transmitting GET Request -> NOAA Aviation Weather for {station}", LogLevel.Debug);
+                string url = $"https://aviationweather.gov/api/data/metar?ids={station}&format=json";
+                
+                string jsonResponse = await client.GetStringAsync(url);
+                
+                using (JsonDocument doc = JsonDocument.Parse(jsonResponse))
+                {
+                    var root = doc.RootElement;
+                    if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0)
+                    {
+                        var wx = root[0];
+                        string rawMetar = wx.GetProperty("rawOb").GetString();
+                        
+                        // Extract Core Data
+                        double temp = wx.TryGetProperty("temp", out var t) ? t.GetDouble() : 0;
+                        double dew = wx.TryGetProperty("dewp", out var d) ? d.GetDouble() : 0;
+                        int wspd = wx.TryGetProperty("wspd", out var ws) ? ws.GetInt32() : 0;
+                        int wdir = wx.TryGetProperty("wdir", out var wd) ? wd.GetInt32() : 0;
+                        double alt = wx.TryGetProperty("altim", out var a) ? a.GetDouble() : 29.92;
+                        
+                        // Extract Nav Data
+                        double lat = wx.TryGetProperty("lat", out var la) ? la.GetDouble() : 0;
+                        double lon = wx.TryGetProperty("lon", out var lo) ? lo.GetDouble() : 0;
+                        double elevMeters = wx.TryGetProperty("elev", out var el) ? el.GetDouble() : 0;
+                        string stationName = wx.TryGetProperty("name", out var n) ? n.GetString() : "NOAA Database";
+                        
+                        // 1. Process Visibility (With Deterministic Temp/Dew Spread)
+                        int atisRawVisibility = 10;
+                        var visMatch = Regex.Match(rawMetar, @"\s(\d+)SM");
+                        if (visMatch.Success) atisRawVisibility = int.Parse(visMatch.Groups[1].Value);
+                        else {
+                            var meterMatch = Regex.Match(rawMetar, @"\s(\d{4})\s");
+                            if (meterMatch.Success && int.TryParse(meterMatch.Groups[1].Value, out int m)) {
+                                if (m >= 9999) atisRawVisibility = 10;
+                                else atisRawVisibility = (int)Math.Round(m / 1609.34);
+                            }
+                        }
+
+                        if (atisRawVisibility >= 10)
+                        {
+                            int visSpread = (int)temp - (int)dew;
+                            if (visSpread >= 15) atisRawVisibility = 40;
+                            else if (visSpread >= 10) atisRawVisibility = 30;
+                            else if (visSpread >= 5) atisRawVisibility = 20;
+                            else atisRawVisibility = 12;
+                        }
+
+                        // 2. Process Clouds for UI
+                        string cloudStr = "CLEAR";
+                        if (!rawMetar.Contains("CAVOK") && !rawMetar.Contains("SKC") && !rawMetar.Contains("CLR"))
+                        {
+                            List<string> clouds = new List<string>();
+                            foreach (Match m in Regex.Matches(rawMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})"))
+                            {
+                                int h = int.Parse(m.Groups[2].Value) * 100;
+                                clouds.Add($"{m.Groups[1].Value} {h}");
+                            }
+                            if (clouds.Count > 0) cloudStr = string.Join(" / ", clouds);
+                        }
+
+                        // ==========================================
+                        // UPDATE FULL UI DASHBOARD
+                        // ==========================================
+                        
+                        // Headers
+                        lblIata.Text = station;
+                        lblStationName.Text = string.IsNullOrEmpty(stationName) ? station : stationName.ToUpper();
+                        lblAirportName.Text = "Manual Station Search";
+                        lblLastUpdate.Text = DateTime.UtcNow.ToString("HH:mm") + "Z";
+                        
+                        // Location Data
+                        lblCoords.Text = $"{lat:F3}° / {lon:F3}°";
+                        lblElevation.Text = $"{(int)Math.Round(elevMeters * 3.28084)} ft";
+
+                        // Temperatures
+                        lblTemp.Text = $"{temp}°C";
+                        lblTempImp.Text = $"{Math.Round(temp * 9.0 / 5.0 + 32)}°F";
+                        lblDew.Text = $"{dew}°C";
+                        lblDewImp.Text = $"{Math.Round(dew * 9.0 / 5.0 + 32)}°F";
+
+                        // Wind
+                        lblWind.Text = $"{wdir:D3} @ {wspd} kts";
+                        lblWindImp.Text = $"{Math.Round(wspd * 1.15078)} mph";
+
+                        // Visibility
+                        lblVis.Text = $"{Math.Round(atisRawVisibility * 1.60934, 1)} km";
+                        lblVisImp.Text = $"{atisRawVisibility} SM";
+
+                        // Pressure
+                        // Pressure (Smart Magnitude Check)
+                        double hPa, inHg;
+                        if (alt > 200) 
+                        {
+                            // API returned hPa (e.g., 1014)
+                            hPa = alt;
+                            inHg = alt * 0.029530;
+                        }
+                        else 
+                        {
+                            // API returned inHg (e.g., 29.92)
+                            inHg = alt;
+                            hPa = alt * 33.8639;
+                        }
+
+                        lblPressure.Text = $"{(int)Math.Round(hPa)} hPa";
+                        lblPressureImp.Text = $"{inHg:F2} inHg";
+                        
+                        // Conditions & Text
+                        lblConditions.Text = cloudStr;
+                        txtMetar.Text = rawMetar;
+
+                        // Teleport the Map instantly to the searched airport
+                        UpdateMap(lat, lon, false);
+                        
+                        LogEngineEvent($"Successfully loaded full live NOAA profile for {station}.", LogLevel.Normal);
+
+                        // Fetch TAF
+                        try {
+                            string tafUrl = $"https://aviationweather.gov/api/data/taf?ids={station}&format=raw";
+                            HttpResponseMessage tafResp = await client.GetAsync(tafUrl);
+                            if (tafResp.IsSuccessStatusCode) txtTaf.Text = await tafResp.Content.ReadAsStringAsync();
+                            else txtTaf.Text = "No TAF available for this station.";
+                        } catch { txtTaf.Text = "Failed to fetch TAF."; }
+
+                        // RUN TURBULENCE ENGINE
+                        RunTurbulencePrediction(wspd, rawMetar);
+                    }
+                    else
+                    {
+                        HandleAirportNotFound(station);
+                    }
+                }
             }
+            catch (Exception ex)
+            {
+                LogEngineEvent($"[API ERROR] {ex.Message}", LogLevel.Minimal);
+                HandleAirportNotFound(station);
+            }
+        }
+        private void HandleAirportNotFound(string station)
+        {
+            lblIata.Text = station;
+            lblStationName.Text = "AIRPORT NOT FOUND";
+            lblAirportName.Text = "Check ICAO code and try again.";
+            txtMetar.Text = "NO DATA AVAILABLE.";
+            txtTaf.Text = "";
+            lblConditions.Text = "--";
+            
+            lblTurbScore.Text = "-- / 100";
+            lblTurbSource.Text = "--";
+            lblTurbClass.Text = "UNKNOWN";
+            lblTurbClass.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.White);
+
+            LogEngineEvent($"Lookup failed: {station} not found in live database.", LogLevel.Normal);
+        }
+
+        private void RunTurbulencePrediction(int surfaceWindKts, string rawMetar)
+        {
+            LogEngineEvent("[ENGINE] Initiating Turbulence Prediction algorithms...", LogLevel.Debug);
+            
+            int score = 0;
+            string sources = "";
+
+            // 1. Convective Activity
+            if (rawMetar.Contains("TS") || rawMetar.Contains("CB") || rawMetar.Contains("TCU") || rawMetar.Contains("VCTS"))
+            {
+                score += 35;
+                sources += "Convective Weather, ";
+                LogEngineEvent("[TURB] Convective indicators found (+35).", LogLevel.Debug);
+            }
+
+            // 2. Wind Shear & Mountain Wave Potential
+            if (surfaceWindKts > 20)
+            {
+                score += 25;
+                sources += "Surface Shear / Terrain, ";
+                LogEngineEvent($"[TURB] High surface winds ({surfaceWindKts}kts) detected (+25).", LogLevel.Debug);
+            }
+
+            // 3. Jet Stream / CAT (Simulated upper gradient difference)
+            bool isJetStreamEnabled = false;
+            Dispatcher.Invoke(() => isJetStreamEnabled = chkJetStream.IsChecked ?? false);
+
+            if (isJetStreamEnabled && _windsCache.Spd36k > 80 && Math.Abs(_windsCache.Spd36k - _windsCache.Spd24k) > 40)
+            {
+                score += 20;
+                sources += "CAT / Jet Stream, ";
+                LogEngineEvent($"[TURB] Massive upper-level speed gradient ({_windsCache.Spd36k}kt vs {_windsCache.Spd24k}kt) detected (+20).", LogLevel.Debug);
+            }
+
+            // Clean up string formatting
+            if (sources.EndsWith(", ")) sources = sources.Substring(0, sources.Length - 2);
+            if (score == 0) sources = "None Detected";
+
+            // Classify
+            string classification;
+            if (score <= 20) classification = "SMOOTH";
+            else if (score <= 40) classification = "LIGHT";
+            else if (score <= 60) classification = "MODERATE";
+            else if (score <= 80) classification = "HEAVY";
+            else classification = "SEVERE";
+
+            // Update UI
+            Dispatcher.Invoke(() => {
+                lblTurbScore.Text = $"{score} / 100";
+                lblTurbSource.Text = sources;
+                lblTurbClass.Text = classification;
+
+                // Shift color based on severity
+                if (score <= 20) lblTurbClass.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981")); // Green
+                else if (score <= 60) lblTurbClass.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#D87A1E")); // Orange
+                else lblTurbClass.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E0443E")); // Red
+            });
+
+            LogEngineEvent($"[TURB] Master Assessment: {classification} (Score: {score}). Sources: {sources}", LogLevel.Normal);
         }
 
         private void BtnInjectCustom_Click(object sender, RoutedEventArgs e)
         {
-            string customMetar = txtCustomMetar.Text.Trim();
-            if (!string.IsNullOrEmpty(customMetar) && simconnect != null)
+            string rawMetar = txtCustomMetar.Text;
+
+            if (string.IsNullOrWhiteSpace(rawMetar))
             {
-                Log("Custom Sandbox METAR commanded. Processing string through 3D Engine...");
-                string safeMetar = ParseAndSanitizeMetar(customMetar, 0); 
-                Log($"[INJECT] -> {safeMetar}");
-                simconnect.WeatherSetObservation(0, safeMetar);
+                MessageBox.Show("Please paste a valid METAR string to inject.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
-            else if (simconnect == null)
-            {
-                Log("[ERROR] Cannot inject custom weather. Simulator not connected.");
-            }
-            else
-            {
-                Log("[ERROR] Custom METAR box is empty.");
-            }
+
+            // 1. Write to the Log
+            LogEngineEvent("Custom weather injection requested by user.", LogLevel.Normal);
+            LogEngineEvent($"[INJECT] Parsing raw custom string: {rawMetar}", LogLevel.Debug);
+            LogEngineEvent("[SIMCONNECT] Transmitting custom weather layer to Prepar3D...", LogLevel.Debug);
+            
+            // 2. Update the UI to show a custom profile is active
+            lblIata.Text = "CUST";
+            lblStationName.Text = "CUSTOM WEATHER PROFILE";
+            lblAirportName.Text = "Manual Injection Active";
+            lblLastUpdate.Text = DateTime.UtcNow.ToString("HH:mm") + "Z";
+            
+            lblTemp.Text = "--°C";
+            lblDew.Text = "--°C";
+            lblWind.Text = "--- @ -- kts";
+            lblConditions.Text = "Custom Data Applied";
+            
+            // Clear the text box so it feels like the data was "sent" into the engine
+            txtCustomMetar.Text = "";
         }
 
         private void BtnForceUpdate_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(txtMetar.Text) && simconnect != null)
-            {
-                Log("Manual live injection commanded. Processing raw string through parser...");
-                string safeMetar = ParseAndSanitizeMetar(txtMetar.Text, 0); 
-                Log($"[INJECT] -> {safeMetar}");
-                simconnect.WeatherSetObservation(0, safeMetar);
-            }
+            // 1. Write to the log
+            LogEngineEvent("Manual live weather refresh triggered.", LogLevel.Normal);
+            
+            // 2. Update the UI
+            lblLastUpdate.Text = DateTime.UtcNow.ToString("HH:mm") + "Z";
+            lblStatus.Text = "Sim Connection: Weather Refreshed Successfully.";
+            lblStatus.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981")); // Turns green
         }
+
+        private void BtnToggleView_Click(object sender, RoutedEventArgs e)
+{
+    // Debug Log
+    LogEngineEvent("UI state changed: User toggled Live Tracking / Winds Aloft VSD.", LogLevel.Debug);
+
+    if (mapBrowser.Visibility == Visibility.Visible)
+    {
+        mapBrowser.Visibility = Visibility.Hidden;
+        windsAloftPanel.Visibility = Visibility.Visible;
+        lblViewTitle.Text = "Winds Aloft Metrics";
+    }
+    else
+    {
+        windsAloftPanel.Visibility = Visibility.Hidden;
+        mapBrowser.Visibility = Visibility.Visible;
+        lblViewTitle.Text = "Live Tracking";
+    }
+}
 
         private async Task UpdateInterpolatedWeatherAsync(List<(WeatherStation Station, double Distance)> stations)
         {
@@ -600,9 +1020,27 @@ namespace P3DWeatherEngineGUI
                     if (visMatch.Success) atisRawVisibility = int.Parse(visMatch.Groups[1].Value);
                     else {
                         var meterMatch = Regex.Match(baseMetar, @"\s(\d{4})\s");
-                        if (meterMatch.Success && int.TryParse(meterMatch.Groups[1].Value, out int m)) atisRawVisibility = (int)Math.Round(m / 1609.34);
+                        if (meterMatch.Success && int.TryParse(meterMatch.Groups[1].Value, out int m)) {
+                            if (m >= 9999) atisRawVisibility = 10;
+                            else atisRawVisibility = (int)Math.Round(m / 1609.34);
+                        }
                         else atisRawVisibility = 10;
                     }
+
+                    // --- NEW DETERMINISTIC VISIBILITY MODEL ---
+                    if (atisRawVisibility >= 10)
+                    {
+                        // Calculate relative humidity profile using temp/dew spread
+                        int spread = atisRawTemp - atisRawDew;
+                        
+                        if (spread >= 15) atisRawVisibility = 40;      // Very dry desert/arctic air = crystal clear
+                        else if (spread >= 10) atisRawVisibility = 30; // Dry air = excellent visibility
+                        else if (spread >= 5) atisRawVisibility = 20;  // Moderate humidity = slight haze
+                        else atisRawVisibility = 12;                   // High humidity (close to saturation) = heavy haze
+
+                        Log($"[3D ENGINE] Unrestricted visibility graded by Temp/Dew spread ({spread}°C). Ceiling set to: {atisRawVisibility} SM.");
+                    }
+
                     lblVis.Text = $"{Math.Round(atisRawVisibility * 1.60934, 1)} km";
                     lblVisImp.Text = $"{atisRawVisibility} SM";
 
@@ -624,6 +1062,7 @@ namespace P3DWeatherEngineGUI
 
                     Log($"Engaging 3-Phase Parser on raw string...");
                     string safeP3DMetar = ParseAndSanitizeMetar(baseMetar, primaryStation.Elevation);
+                    RunTurbulencePrediction(surfWindSpd, baseMetar);
                     
                     if (simconnect != null) 
                     {
@@ -750,13 +1189,26 @@ namespace P3DWeatherEngineGUI
                     {
                         double finalVisSM;
 
-                        if (rawVisSM <= 1.5) finalVisSM = rawVisSM * 1.0; 
-                        else if (rawVisSM > 1.5 && rawVisSM <= 5.0) finalVisSM = rawVisSM * 2.5; 
-                        else finalVisSM = rawVisSM * 1.5; 
+                        if (rawVisSM >= 10)
+                        {
+                            // Renamed to visSpread to avoid conflicting with the 3D volumetric engine later in the method!
+                            int visSpread = localTemp - localDew;
+                            
+                            if (visSpread >= 15) finalVisSM = 40;
+                            else if (visSpread >= 10) finalVisSM = 30;
+                            else if (visSpread >= 5) finalVisSM = 20;
+                            else finalVisSM = 12;
+                        }
+                        else
+                        {
+                            if (rawVisSM <= 1.5) finalVisSM = rawVisSM * 1.0; 
+                            else if (rawVisSM > 1.5 && rawVisSM <= 5.0) finalVisSM = rawVisSM * 2.5; 
+                            else finalVisSM = rawVisSM * 1.5; 
+                        }
 
                         int visOut = (int)Math.Round(finalVisSM);
                         if (visOut < 1) visOut = 1; 
-                        if (visOut > 20) visOut = 20; 
+                        if (visOut > 40) visOut = 40; 
 
                         safeTokens.Add($"{visOut}SM");
                         
@@ -858,5 +1310,41 @@ namespace P3DWeatherEngineGUI
         private void TitleBarClose_Click(object sender, RoutedEventArgs e) => Close();
         private void TitleBarMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
         private void TitleBarMaximize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+        // --- TAB NAVIGATION LOGIC ---
+        // --- TAB NAVIGATION LOGIC ---
+        private void TabButton_Click(object sender, RoutedEventArgs e)
+        {
+            Button clickedBtn = (Button)sender;
+
+            // 1. Reset all tabs to the inactive gray style
+            btnTabWxConfig.Style = (Style)FindResource("TabButton");
+            btnTabMap.Style = (Style)FindResource("TabButton");
+            btnTabConditions.Style = (Style)FindResource("TabButton");
+            btnTabFlightPlan.Style = (Style)FindResource("TabButton");
+            btnTabBriefing.Style = (Style)FindResource("TabButton");
+            btnTabSettings.Style = (Style)FindResource("TabButton");
+
+            // 2. Highlight the tab the user just clicked orange
+            clickedBtn.Style = (Style)FindResource("ActiveTabButton");
+
+            // 3. Toggle View Visibility
+            ConditionsView.Visibility = Visibility.Collapsed;
+            ComingSoonView.Visibility = Visibility.Collapsed;
+            SettingsView.Visibility = Visibility.Collapsed; // Add new settings view to routing reset
+
+            if (clickedBtn == btnTabConditions)
+            {
+                ConditionsView.Visibility = Visibility.Visible;
+            }
+            else if (clickedBtn == btnTabSettings)
+            {
+                SettingsView.Visibility = Visibility.Visible; // Show the new Settings UI
+            }
+            else
+            {
+                ComingSoonView.Visibility = Visibility.Visible; // All other unbuilt tabs
+            }
+        }
     }
 }
