@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="SkyNexus 2.4" Height="760" Width="920"
+        Icon="icon.ico"
         Background="#252525" WindowStartupLocation="CenterScreen" 
         WindowStyle="None" ResizeMode="CanResizeWithGrip"
         FontFamily="Product Sans, Segoe UI, sans-serif">
@@ -14,7 +15,7 @@
     <Window.Resources>
         <Style TargetType="ScrollBar">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#4A4A4A"/>
+            <Setter Property="Foreground" Value="#7A7A7A"/>
             <Setter Property="Width" Value="6"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -32,6 +33,94 @@
                                 </Track.Thumb>
                             </Track>
                         </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontFamily" Value="Product Sans, Segoe UI, sans-serif"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Grid Width="20" Height="20" Margin="0,0,12,0">
+                                <Ellipse x:Name="bg" Fill="#1E1E1E" Stroke="#404040" StrokeThickness="1.5"/>
+                                <Path x:Name="check" Data="M 5,10.5 L 8.5,14 L 15,6" Stroke="White" StrokeThickness="2" Visibility="Collapsed" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                            </Grid>
+                            <ContentPresenter VerticalAlignment="Center" Margin="0,-1,0,0"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="bg" Property="Fill" Value="#D87A1E"/>
+                                <Setter TargetName="bg" Property="Stroke" Value="#D87A1E"/>
+                                <Setter TargetName="check" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bg" Property="Stroke" Value="#7A7A7A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#404040"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontFamily" Value="Product Sans, Segoe UI, sans-serif"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton" Focusable="false" IsChecked="{Binding Path=IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="#1E1E1E" BorderBrush="#404040" BorderThickness="1" CornerRadius="4">
+                                            <Path x:Name="Arrow" Fill="#A0A0A0" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Data="M 0 0 L 4 4 L 8 0 Z"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" Margin="10,0,25,0" VerticalAlignment="Center" HorizontalAlignment="Left" />
+                            <Popup x:Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Grid x:Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <Border x:Name="DropDownBorder" Background="#1E1E1E" BorderThickness="1" BorderBrush="#404040" CornerRadius="4" ClipToBounds="True">
+                                        <ScrollViewer Margin="0" SnapsToDevicePixels="True">
+                                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                        </ScrollViewer>
+                                    </Border>
+                                </Grid>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#333333"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#D87A1E"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -132,231 +221,634 @@
         </Grid>
 
         <Grid Grid.Row="1" Margin="15,5,15,15">
-            
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/> <RowDefinition Height="Auto"/> <RowDefinition Height="Auto"/> <RowDefinition Height="2.7*"/> <RowDefinition Height="1.1*"/> <RowDefinition Height="0.9*"/> <RowDefinition Height="Auto"/> 
+                <RowDefinition Height="Auto"/> 
+                <RowDefinition Height="*"/>    
+                <RowDefinition Height="Auto"/> 
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" BorderBrush="#404040" BorderThickness="0,0,0,2" Margin="0,0,0,10">
                 <Grid>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left">
-                        <Button Content="Wx Configuration" Style="{StaticResource TabButton}" Margin="0,0,5,0"/>
-                        <Button Content="Map" Style="{StaticResource TabButton}" Margin="0,0,5,0"/>
-                        <Button Content="Conditions" Style="{StaticResource ActiveTabButton}" Margin="0,0,5,0"/>
-                        <Button Content="Flight Plan" Style="{StaticResource TabButton}" Margin="0,0,5,0"/>
-                        <Button Content="Briefing" Style="{StaticResource TabButton}" Margin="0,0,5,0"/>
-                        <Button Content="Settings" Style="{StaticResource TabButton}" Margin="0,0,5,0"/>
+                        <Button x:Name="btnTabWxConfig" Content="Wx Configuration" Style="{StaticResource TabButton}" Margin="0,0,5,0" Click="TabButton_Click"/>
+                        <Button x:Name="btnTabMap" Content="Map" Style="{StaticResource TabButton}" Margin="0,0,5,0" Click="TabButton_Click"/>
+                        <Button x:Name="btnTabConditions" Content="Conditions" Style="{StaticResource ActiveTabButton}" Margin="0,0,5,0" Click="TabButton_Click"/>
+                        <Button x:Name="btnTabFlightPlan" Content="Flight Plan" Style="{StaticResource TabButton}" Margin="0,0,5,0" Click="TabButton_Click"/>
+                        <Button x:Name="btnTabBriefing" Content="Briefing" Style="{StaticResource TabButton}" Margin="0,0,5,0" Click="TabButton_Click"/>
+                        <Button x:Name="btnTabSettings" Content="Settings" Style="{StaticResource TabButton}" Margin="0,0,5,0" Click="TabButton_Click"/>
                     </StackPanel>
                     
-                    <Image Source="pack://application:,,,/logo.png" Height="30" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,5,0" RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <Image Source="pack://application:,,,/logo2.png" Height="30" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,5,0" RenderOptions.BitmapScalingMode="HighQuality"/>
                 </Grid>
             </Border>
 
-            <Border Grid.Row="1" Background="#333333" CornerRadius="8" Padding="10,0" Margin="0,0,0,10" Height="48">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+            <Grid x:Name="ConditionsView" Grid.Row="1" Visibility="Visible">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/> <RowDefinition Height="Auto"/> <RowDefinition Height="2.7*"/> <RowDefinition Height="1.1*"/> <RowDefinition Height="0.9*"/>
+                </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="Station:" Foreground="#A0A0A0" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
-                        <TextBox x:Name="txtSearchIcao" Width="120" Height="28" CharacterCasing="Upper" FontSize="13"/>
-                        <Button Content="Load WX" Width="85" Height="28" Margin="10,0,0,0" Padding="0" Background="#4A4A4A" FontSize="12" Click="BtnSearch_Click"/>
-                    </StackPanel>
+                <Border Grid.Row="0" Background="#333333" CornerRadius="8" Padding="10,0" Margin="0,0,0,10" Height="48">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
-                        <TextBlock Text="Custom Wx:" Foreground="#A0A0A0" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
-                        <TextBox x:Name="txtCustomMetar" Width="280" Height="28" FontSize="13" ToolTip="Paste raw METAR string here..."/>
-                        <Button Content="Inject WX" Width="95" Height="28" Margin="10,0,0,0" Padding="0" Background="#4A4A4A" FontSize="12" Click="BtnInjectCustom_Click"/>
-                    </StackPanel>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Station:" Foreground="#A0A0A0" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                            <TextBox x:Name="txtSearchIcao" Width="120" Height="28" CharacterCasing="Upper" FontSize="13"/>
+                            <Button Content="Load WX" Width="85" Height="28" Margin="10,0,0,0" Padding="0" Background="#4A4A4A" FontSize="12" Click="BtnSearch_Click"/>
+                        </StackPanel>
 
-                    <Button Grid.Column="2" Content="Refresh WX" HorizontalAlignment="Right" Width="120" Height="28" Padding="0" Background="#D87A1E" FontSize="12" Click="BtnForceUpdate_Click"/>
-                </Grid>
-            </Border>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <TextBlock Text="Custom Wx:" Foreground="#A0A0A0" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                            <TextBox x:Name="txtCustomMetar" Width="280" Height="28" FontSize="13" ToolTip="Paste raw METAR string here..."/>
+                            <Button Content="Inject WX" Width="95" Height="28" Margin="10,0,0,0" Padding="0" Background="#4A4A4A" FontSize="12" Click="BtnInjectCustom_Click"/>
+                        </StackPanel>
 
-            <StackPanel Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,10">
-                <TextBlock x:Name="lblIata" Text="---" Foreground="#D87A1E" FontSize="18" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,-5"/>
-                <TextBlock x:Name="lblStationName" Text="WAITING FOR SIMCONNECT..." Foreground="White" FontSize="36" FontWeight="Bold" HorizontalAlignment="Center"/>
-                <TextBlock x:Name="lblAirportName" Text="Simulator Connection Pending" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,-2,0,0"/>
-                <Grid Width="600" Margin="0,12,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0">
-                        <TextBlock Text="Last Updated" Foreground="#A0A0A0" FontSize="12" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblLastUpdate" Text="--:--Z" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="1">
-                        <TextBlock Text="Coordinates" Foreground="#A0A0A0" FontSize="12" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblCoords" Text="-- / --" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2">
-                        <TextBlock Text="Elevation" Foreground="#A0A0A0" FontSize="12" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblElevation" Text="-- ft" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"/>
-                    </StackPanel>
-                </Grid>
-            </StackPanel>
+                        <Button Grid.Column="2" Content="Refresh WX" HorizontalAlignment="Right" Width="120" Height="28" Padding="0" Background="#D87A1E" FontSize="12" Click="BtnForceUpdate_Click"/>
+                    </Grid>
+                </Border>
 
-            <Grid Grid.Row="3">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="2*"/>
-                    <ColumnDefinition Width="5*"/>
-                    <ColumnDefinition Width="2*"/>
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,15">
-                    <TextBlock Text="Temperature" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
-                    <StackPanel Margin="0,0,0,10">
-                        <TextBlock x:Name="lblTemp" Text="--°C" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblTempImp" Text="--°F" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                    </StackPanel>
-                    
-                    <TextBlock Text="Dewpoint" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
-                    <StackPanel Margin="0,0,0,10">
-                        <TextBlock x:Name="lblDew" Text="--°C" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblDewImp" Text="--°F" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                    </StackPanel>
-                    
-                    <TextBlock Text="Surface Winds" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
-                    <StackPanel>
-                        <TextBlock x:Name="lblWind" Text="--- @ -- kts" Foreground="#D87A1E" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblWindImp" Text="-- mph" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                    </StackPanel>
+                <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,10">
+                    <TextBlock x:Name="lblIata" Text="---" Foreground="#D87A1E" FontSize="18" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,-5"/>
+                    <TextBlock x:Name="lblStationName" Text="WAITING FOR SIMCONNECT..." Foreground="White" FontSize="36" FontWeight="Bold" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="lblAirportName" Text="Simulator Connection Pending" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,-2,0,0"/>
+                    <Grid Width="600" Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Last Updated" Foreground="#A0A0A0" FontSize="12" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblLastUpdate" Text="--:--Z" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="Coordinates" Foreground="#A0A0A0" FontSize="12" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblCoords" Text="-- / --" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Elevation" Foreground="#A0A0A0" FontSize="12" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblElevation" Text="-- ft" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
                 </StackPanel>
 
-                <Border Grid.Column="1" Background="#333333" CornerRadius="10" Padding="15" Margin="15,0" ClipToBounds="True">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*"/>
+                        <ColumnDefinition Width="5*"/>
+                        <ColumnDefinition Width="2*"/>
+                    </Grid.ColumnDefinitions>
 
-                        <Grid Grid.Row="0" Margin="0,0,0,10" Panel.ZIndex="2">
-                            <TextBlock x:Name="lblViewTitle" Text="Live Tracking" Foreground="#A0A0A0" FontWeight="Bold" VerticalAlignment="Center"/>
-                            <Button Content="Switch View" HorizontalAlignment="Right" Background="#4A4A4A" FontSize="11" Padding="12,4" Height="24" Click="BtnToggleView_Click"/>
-                        </Grid>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,15">
+                        <TextBlock Text="Temperature" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
+                        <StackPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="lblTemp" Text="--°C" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblTempImp" Text="--°F" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        </StackPanel>
                         
-                        <Grid Grid.Row="1">
-                            <wv2:WebView2 x:Name="mapBrowser" />
+                        <TextBlock Text="Dewpoint" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
+                        <StackPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="lblDew" Text="--°C" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblDewImp" Text="--°F" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        
+                        <TextBlock Text="Surface Winds" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
+                        <StackPanel>
+                            <TextBlock x:Name="lblWind" Text="--- @ -- kts" Foreground="#D87A1E" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblWindImp" Text="-- mph" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <Border Grid.Column="1" Background="#333333" CornerRadius="10" Padding="15" Margin="15,0" ClipToBounds="True">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0" Margin="0,0,0,10" Panel.ZIndex="2">
+                                <TextBlock x:Name="lblViewTitle" Text="Live Tracking" Foreground="#A0A0A0" FontWeight="Bold" VerticalAlignment="Center"/>
+                                <Button Content="Switch View" HorizontalAlignment="Right" Background="#4A4A4A" FontSize="11" Padding="12,4" Height="24" Click="BtnToggleView_Click"/>
+                            </Grid>
                             
-                            <Border x:Name="windsAloftPanel" Visibility="Hidden" Background="#111111" CornerRadius="6" BorderBrush="#333333" BorderThickness="1">
-                                <Grid Margin="15,10">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="60"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="110"/>
-                                    </Grid.ColumnDefinitions>
+                            <Grid Grid.Row="1">
+                                <wv2:WebView2 x:Name="mapBrowser" />
+                                
+                                <Border x:Name="windsAloftPanel" Visibility="Hidden" Background="#111111" CornerRadius="6" BorderBrush="#333333" BorderThickness="1">
+                                    <Grid Margin="15,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="60"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="110"/>
+                                        </Grid.ColumnDefinitions>
 
-                                    <Grid Grid.Column="0" Margin="0,0,15,0">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="*"/>
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0" Text="FL360" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
-                                        <TextBlock Grid.Row="1" Text="FL240" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
-                                        <TextBlock Grid.Row="2" Text="FL100" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
-                                        <TextBlock Grid.Row="3" Text="SURF" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
-                                    </Grid>
-
-                                    <Border Grid.Column="1" Background="#0A0A0A" BorderBrush="#404040" BorderThickness="1,0,1,0">
-                                        <Grid>
-                                            <Grid>
-                                                <Grid.RowDefinitions>
-                                                    <RowDefinition Height="*"/>
-                                                    <RowDefinition Height="*"/>
-                                                    <RowDefinition Height="*"/>
-                                                    <RowDefinition Height="*"/>
-                                                </Grid.RowDefinitions>
-                                                <Line Grid.Row="0" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
-                                                <Line Grid.Row="1" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
-                                                <Line Grid.Row="2" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
-                                                <Line Grid.Row="3" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
-                                            </Grid>
-
-                                            <Canvas x:Name="altCanvas" ClipToBounds="True">
-                                                <Line X1="25" Y1="0" X2="25" Y2="1000" Stroke="#404040" StrokeThickness="1" StrokeDashArray="2,2"/>
-                                                <Polygon x:Name="planeIcon" Points="0,0 0,14 16,14" Fill="#FFFFFF" Canvas.Bottom="0" Canvas.Left="9"/>
-                                            </Canvas>
+                                        <Grid Grid.Column="0" Margin="0,0,15,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="FL360" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                                            <TextBlock Grid.Row="1" Text="FL240" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                                            <TextBlock Grid.Row="2" Text="FL100" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                                            <TextBlock Grid.Row="3" Text="SURF" Foreground="White" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right"/>
                                         </Grid>
-                                    </Border>
 
-                                    <Grid Grid.Column="2" Margin="15,0,0,0">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="*"/>
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0" x:Name="lblWind36k" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
-                                        <TextBlock Grid.Row="1" x:Name="lblWind24k" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
-                                        <TextBlock Grid.Row="2" x:Name="lblWind10k" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
-                                        <TextBlock Grid.Row="3" x:Name="lblWindSurf_Aloft" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                                        <Border Grid.Column="1" Background="#0A0A0A" BorderBrush="#404040" BorderThickness="1,0,1,0">
+                                            <Grid>
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="*"/>
+                                                        <RowDefinition Height="*"/>
+                                                        <RowDefinition Height="*"/>
+                                                        <RowDefinition Height="*"/>
+                                                    </Grid.RowDefinitions>
+                                                    <Line Grid.Row="0" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
+                                                    <Line Grid.Row="1" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
+                                                    <Line Grid.Row="2" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
+                                                    <Line Grid.Row="3" X1="0" Y1="0" X2="1" Y2="0" Stretch="Fill" Stroke="#333333" StrokeThickness="1" StrokeDashArray="4,4" VerticalAlignment="Center"/>
+                                                </Grid>
+
+                                                <Canvas x:Name="altCanvas" ClipToBounds="True">
+                                                    <Line X1="25" Y1="0" X2="25" Y2="1000" Stroke="#404040" StrokeThickness="1" StrokeDashArray="2,2"/>
+                                                    <Polygon x:Name="planeIcon" Points="0,0 0,14 16,14" Fill="#FFFFFF" Canvas.Bottom="0" Canvas.Left="9"/>
+                                                </Canvas>
+                                            </Grid>
+                                        </Border>
+
+                                        <Grid Grid.Column="2" Margin="15,0,0,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" x:Name="lblWind36k" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                                            <TextBlock Grid.Row="1" x:Name="lblWind24k" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                                            <TextBlock Grid.Row="2" x:Name="lblWind10k" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                                            <TextBlock Grid.Row="3" x:Name="lblWindSurf_Aloft" Text="-- @ -- kts" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                                        </Grid>
                                     </Grid>
-                                </Grid>
-                            </Border>
+                                </Border>
+                            </Grid>
                         </Grid>
-                    </Grid>
-                </Border>
+                    </Border>
 
-                <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,15">
-                    <TextBlock Text="Visibility" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
-                    <StackPanel Margin="0,0,0,10">
-                        <TextBlock x:Name="lblVis" Text="-- km" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblVisImp" Text="-- SM" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,15">
+                        <TextBlock Text="Visibility" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
+                        <StackPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="lblVis" Text="-- km" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblVisImp" Text="-- SM" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        
+                        <TextBlock Text="Altimeter" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
+                        <StackPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="lblPressure" Text="---- hPa" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="lblPressureImp" Text="--.-- inHg" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        
+                        <TextBlock Text="Conditions" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="lblConditions" Text="--" Foreground="#D87A1E" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
                     </StackPanel>
-                    
-                    <TextBlock Text="Altimeter" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
-                    <StackPanel Margin="0,0,0,10">
-                        <TextBlock x:Name="lblPressure" Text="---- hPa" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="lblPressureImp" Text="--.-- inHg" Foreground="#A0A0A0" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                    </StackPanel>
-                    
-                    <TextBlock Text="Conditions" Foreground="#A0A0A0" FontSize="13" HorizontalAlignment="Center"/>
-                    <TextBlock x:Name="lblConditions" Text="--" Foreground="#D87A1E" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
-                </StackPanel>
-            </Grid>
-
-            <Grid Grid.Row="4" Margin="0,10,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="20"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                
-                <Border Grid.Column="0" Background="#333333" CornerRadius="10" Padding="15">
-                    <Grid>
-                        <TextBlock Text="VATSIM METAR" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,10" VerticalAlignment="Top"/>
-                        <TextBox x:Name="txtMetar" Margin="0,25,0,0" Background="Transparent" Foreground="#E0E0E0" BorderThickness="0" TextWrapping="Wrap" IsReadOnly="True" FontSize="14" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Hidden"/>
-                    </Grid>
-                </Border>
-                
-                <Border Grid.Column="2" Background="#333333" CornerRadius="10" Padding="15">
-                    <Grid>
-                        <TextBlock Text="NOAA TAF (Forecast)" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,10" VerticalAlignment="Top"/>
-                        <TextBox x:Name="txtTaf" Margin="0,25,0,0" Background="Transparent" Foreground="#E0E0E0" BorderThickness="0" TextWrapping="Wrap" IsReadOnly="True" FontSize="14" VerticalScrollBarVisibility="Hidden" VerticalContentAlignment="Top"/>
-                    </Grid>
-                </Border>
-            </Grid>
-
-            <Border Grid.Row="5" Background="#111111" BorderBrush="#333333" BorderThickness="1" CornerRadius="8" Margin="0,10,0,0" Padding="10">
-                <Grid>
-                    <TextBlock Text="ENGINE CONSOLE" Foreground="#555555" FontWeight="Bold" FontSize="11" Margin="0,0,0,5" VerticalAlignment="Top"/>
-                    <TextBox x:Name="txtConsole" Margin="0,20,0,0" Background="Transparent" Foreground="#10B981" BorderThickness="0" FontFamily="Consolas" FontSize="13" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top"/>
                 </Grid>
-            </Border>
 
-            <Border Grid.Row="6" Background="#1E1E1E" CornerRadius="6" Margin="0,10,0,0" Padding="10,0" Height="30">
+                <Grid Grid.Row="3" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*"/>
+                        <ColumnDefinition Width="15"/>
+                        <ColumnDefinition Width="3*"/>
+                        <ColumnDefinition Width="15"/>
+                        <ColumnDefinition Width="2*"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <Border Grid.Column="0" Background="#333333" CornerRadius="10" Padding="15">
+                        <Grid>
+                            <TextBlock Text="VATSIM / NOAA METAR" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,10" VerticalAlignment="Top"/>
+                            <TextBox x:Name="txtMetar" Margin="0,25,0,0" Background="Transparent" Foreground="#E0E0E0" BorderThickness="0" TextWrapping="Wrap" IsReadOnly="True" FontSize="14" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Hidden"/>
+                        </Grid>
+                    </Border>
+                    
+                    <Border Grid.Column="2" Background="#333333" CornerRadius="10" Padding="15">
+                        <Grid>
+                            <TextBlock Text="NOAA TAF (Forecast)" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,10" VerticalAlignment="Top"/>
+                            <TextBox x:Name="txtTaf" Margin="0,25,0,0" Background="Transparent" Foreground="#E0E0E0" BorderThickness="0" TextWrapping="Wrap" IsReadOnly="True" FontSize="14" VerticalScrollBarVisibility="Hidden" VerticalContentAlignment="Top"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="4" Background="#212121" BorderBrush="#404040" BorderThickness="1" CornerRadius="10" Padding="15">
+                        <StackPanel>
+                            <TextBlock Text="TURBULENCE OUTLOOK" Foreground="#D87A1E" FontWeight="Bold" FontSize="11" Margin="0,0,0,10"/>
+                            
+                            <TextBlock Text="Current:" Foreground="#A0A0A0" FontSize="11" Margin="0,0,0,2"/>
+                            <TextBlock x:Name="lblTurbClass" Text="UNKNOWN" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+                            
+                            <TextBlock Text="Primary Factors:" Foreground="#A0A0A0" FontSize="11" Margin="0,0,0,2"/>
+                            <TextBlock x:Name="lblTurbSource" Text="--" Foreground="#E0E0E0" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            
+                            <TextBlock Text="Turbulence Score:" Foreground="#A0A0A0" FontSize="11" Margin="0,0,0,2"/>
+                            <TextBlock x:Name="lblTurbScore" Text="-- / 100" Foreground="#D87A1E" FontSize="14" FontWeight="Bold"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Border Grid.Row="4" Background="#111111" BorderBrush="#333333" BorderThickness="1" CornerRadius="8" Margin="0,10,0,0" Padding="10">
+                    <Grid>
+                        <TextBlock Text="ENGINE CONSOLE" Foreground="#555555" FontWeight="Bold" FontSize="11" Margin="0,0,0,5" VerticalAlignment="Top"/>
+                        <TextBox x:Name="txtConsole" Margin="0,20,0,0" Background="Transparent" Foreground="#10B981" BorderThickness="0" FontFamily="Consolas" FontSize="13" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top"/>
+                    </Grid>
+                </Border>
+            </Grid>
+            <Grid x:Name="FlightPlanView" Grid.Row="1" Visibility="Collapsed">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,0,10,10">
+                        
+                        <Border Background="#333333" CornerRadius="8" Padding="15" Margin="0,0,0,15">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="Manual Route:" Foreground="#A0A0A0" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                                    <TextBox x:Name="txtFpDep" Width="60" Height="28" CharacterCasing="Upper" FontSize="13" Text="VOML"/>
+                                    <TextBlock Text="→" Foreground="#D87A1E" VerticalAlignment="Center" Margin="8,0" FontWeight="Bold" FontSize="16"/>
+                                    <TextBox x:Name="txtFpArr" Width="60" Height="28" CharacterCasing="Upper" FontSize="13" Text="OMDB"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+                                    <TextBlock Text="SimBrief ID:" Foreground="#A0A0A0" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                                    <TextBox x:Name="txtSimbriefId" Width="100" Height="28" FontSize="13" ToolTip="Navigraph Username or Pilot ID"/>
+                                    <Button x:Name="btnImportSimbrief" Content="Import OFP" Click="BtnImportSimbrief_Click" Background="#4A4A4A" Height="28" Padding="12,0" Margin="10,0,0,0" FontSize="12"/>
+                                </StackPanel>
+
+                                <Button Grid.Column="3" x:Name="btnImportFile" Content="Load .PLN / .RTE" Click="BtnImportFile_Click" Background="#4A4A4A" Height="28" Padding="12,0" Margin="15,0,0,0" FontSize="12"/>
+                            </Grid>
+                        </Border>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.5*"/>
+                                <ColumnDefinition Width="15"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                
+                                <Border Background="#212121" BorderBrush="#404040" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="SKYNEXUS DISPATCH BRIEF" Foreground="#555555" FontWeight="Bold" FontSize="11" Margin="0,0,0,10"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                                <TextBlock x:Name="lblBriefFlight" Text="AIX123" Foreground="White" FontSize="24" FontWeight="Bold" Margin="0,0,15,0"/>
+                                                <TextBlock x:Name="lblBriefRoute" Text="VOML → OMDB" Foreground="#D87A1E" FontSize="24" FontWeight="Bold"/>
+                                            </StackPanel>
+                                            
+                                            <Grid Margin="0,10,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                
+                                                <StackPanel Grid.Column="0">
+                                                    <TextBlock Text="Distance:" Foreground="#A0A0A0" FontSize="12"/>
+                                                    <TextBlock x:Name="lblBriefDist" Text="---- NM" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                                    <TextBlock Text="Est. Time:" Foreground="#A0A0A0" FontSize="12"/>
+                                                    <TextBlock x:Name="lblBriefTime" Text="--:--" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                                    <TextBlock Text="Cruise:" Foreground="#A0A0A0" FontSize="12"/>
+                                                    <TextBlock x:Name="lblBriefCruise" Text="FL---" Foreground="White" FontWeight="SemiBold"/>
+                                                </StackPanel>
+                                                
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="Departure Wx:" Foreground="#A0A0A0" FontSize="12"/>
+                                                    <TextBlock x:Name="lblBriefDepWx" Text="--" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                                    <TextBlock Text="Arrival Wx:" Foreground="#A0A0A0" FontSize="12"/>
+                                                    <TextBlock x:Name="lblBriefArrWx" Text="--" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                                    <TextBlock Text="Turbulence:" Foreground="#A0A0A0" FontSize="12"/>
+                                                    <TextBlock x:Name="lblBriefTurb" Text="--" Foreground="#D87A1E" FontWeight="SemiBold"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </StackPanel>
+
+                                        <Border Grid.Column="1" Background="#333333" CornerRadius="8" Padding="15,10" VerticalAlignment="Top">
+                                            <StackPanel>
+                                                <TextBlock Text="WEATHER RISK" Foreground="#A0A0A0" FontSize="10" HorizontalAlignment="Center"/>
+                                                <TextBlock x:Name="lblRiskScore" Text="UNKNOWN" Foreground="#A0A0A0" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Border>
+
+                                <Border Background="#111111" CornerRadius="8" ClipToBounds="True" Height="300" BorderBrush="#333333" BorderThickness="1" Margin="0,0,0,15">
+                                    <wv2:WebView2 x:Name="fpMapBrowser" />
+                                </Border>
+
+                                
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                
+                                <Border Background="#333333" CornerRadius="8" Padding="15" Margin="0,0,0,15">
+                                    <StackPanel>
+                                        <TextBlock Text="DEPARTURE METAR" Foreground="#10B981" FontWeight="Bold" FontSize="12" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="lblFpDepName" Text="---" Foreground="White" FontWeight="Bold" FontSize="16"/>
+                                        <Grid Margin="0,10,0,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="lblFpDepWind" Grid.Row="0" Grid.Column="0" Text="-- @ -- kt" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,5"/>
+                                            <TextBlock x:Name="lblFpDepVis" Grid.Row="0" Grid.Column="1" Text="-- SM" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,5"/>
+                                            <TextBlock x:Name="lblFpDepCond" Grid.Row="0" Grid.Column="2" Text="--" Foreground="#D87A1E" FontSize="13" Margin="0,0,0,5"/>
+                                            <TextBlock x:Name="lblFpDepTemp" Grid.Row="1" Grid.Column="0" Text="-- / -- °C" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,10"/>
+                                            <TextBlock x:Name="lblFpDepAltim" Grid.Row="1" Grid.Column="1" Text="---- hPa" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,10"/>
+                                            <TextBlock x:Name="lblFpDepRaw" Grid.Row="2" Grid.ColumnSpan="3" Text="WAITING FOR DATA..." Foreground="#555555" FontSize="11" TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#333333" CornerRadius="8" Padding="15" Margin="0,0,0,15">
+                                    <StackPanel>
+                                        <TextBlock Text="ARRIVAL METAR" Foreground="#10B981" FontWeight="Bold" FontSize="12" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="lblFpArrName" Text="---" Foreground="White" FontWeight="Bold" FontSize="16"/>
+                                        <Grid Margin="0,10,0,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="lblFpArrWind" Grid.Row="0" Grid.Column="0" Text="-- @ -- kt" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,5"/>
+                                            <TextBlock x:Name="lblFpArrVis" Grid.Row="0" Grid.Column="1" Text="-- SM" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,5"/>
+                                            <TextBlock x:Name="lblFpArrCond" Grid.Row="0" Grid.Column="2" Text="--" Foreground="#D87A1E" FontSize="13" Margin="0,0,0,5"/>
+                                            
+                                            <TextBlock x:Name="lblFpArrTemp" Grid.Row="1" Grid.Column="0" Text="-- / -- °C" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,10"/>
+                                            <TextBlock x:Name="lblFpArrAltim" Grid.Row="1" Grid.Column="1" Text="---- hPa" Foreground="#A0A0A0" FontSize="13" Margin="0,0,0,10"/>
+                                            
+                                            <TextBlock x:Name="lblFpArrRaw" Grid.Row="2" Grid.ColumnSpan="3" Text="WAITING FOR DATA..." Foreground="#555555" FontSize="11" TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#333333" CornerRadius="8" Padding="15" Margin="0,0,0,15">
+                                    <StackPanel>
+                                        <TextBlock Text="ENROUTE WINDS ALOFT" Foreground="#D87A1E" FontWeight="Bold" FontSize="12" Margin="0,0,0,10"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="40"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="FL360" Foreground="#A0A0A0" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="lblFpWind36k" Text="-- @ -- kt ( -- )" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                            
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="FL240" Foreground="#A0A0A0" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="lblFpWind24k" Text="-- @ -- kt ( -- )" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                            
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="FL100" Foreground="#A0A0A0" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="lblFpWind10k" Text="-- @ -- kt ( -- )" Foreground="White" FontWeight="SemiBold"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#333333" CornerRadius="8" Padding="15">
+                                    <StackPanel>
+                                        <TextBlock Text="TURBULENCE OUTLOOK" Foreground="#D87A1E" FontWeight="Bold" FontSize="12" Margin="0,0,0,10"/>
+                                        
+                                        <TextBlock Text="Departure Phase:" Foreground="#A0A0A0" FontSize="11" Margin="0,0,0,2"/>
+                                        <TextBlock x:Name="lblFpTurbDep" Text="--" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                        
+                                        <TextBlock Text="Enroute / Cruise:" Foreground="#A0A0A0" FontSize="11" Margin="0,0,0,2"/>
+                                        <TextBlock x:Name="lblFpTurbEnroute" Text="--" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                        
+                                        <TextBlock Text="Arrival Phase:" Foreground="#A0A0A0" FontSize="11" Margin="0,0,0,2"/>
+                                        <TextBlock x:Name="lblFpTurbArr" Text="--" Foreground="White" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                </Border>
+
+                            </StackPanel>
+                        </Grid>
+                        <Border Background="#333333" CornerRadius="8" Padding="15">
+                                    <StackPanel>
+                                        <TextBlock Text="SIGNIFICANT WEATHER ALERTS (SIGWX)" Foreground="#E0443E" FontWeight="Bold" FontSize="12" Margin="0,0,0,10"/>
+                                        <ListBox x:Name="listSigWx" Background="Transparent" BorderThickness="0" Foreground="White" FontSize="13">
+                                            <ListBoxItem Content="Waiting for route generation..."/>
+                                        </ListBox>
+                                    </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <Grid x:Name="ComingSoonView" Grid.Row="1" Visibility="Collapsed">
+                <TextBlock Text="( COMING SOON... )" Foreground="#4A4A4A" FontSize="42" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+
+            <Grid x:Name="SettingsView" Grid.Row="1" Visibility="Collapsed">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,0,10,20">
+                        
+                        <Border Background="#333333" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="WEATHER" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,15"/>
+                                
+                                <Grid Margin="0,0,0,15">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="180"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Weather Update Interval" Foreground="#E0E0E0" VerticalAlignment="Center" FontSize="14"/>
+                                    <ComboBox x:Name="cmbUpdateInterval" SelectionChanged="Setting_Changed" Grid.Column="1" SelectedIndex="3" Height="28">
+                                        <ComboBoxItem Content="30 Seconds"/>
+                                        <ComboBoxItem Content="1 Minute"/>
+                                        <ComboBoxItem Content="2 Minutes"/>
+                                        <ComboBoxItem Content="5 Minutes"/>
+                                    </ComboBox>
+                                </Grid>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="180"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Weather Source" Foreground="#E0E0E0" VerticalAlignment="Center" FontSize="14"/>
+                                    <ComboBox x:Name="cmbWxSource" SelectionChanged="Setting_Changed" Grid.Column="1" SelectedIndex="3" Height="28">
+                                        <ComboBoxItem Content="NOAA"/>
+                                        <ComboBoxItem Content="VATSIM"/>
+                                        <ComboBoxItem Content="IVAO"/>
+                                        <ComboBoxItem Content="Auto Select"/>
+                                    </ComboBox>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#333333" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="WINDS ALOFT" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,15"/>
+                                <CheckBox x:Name="chkSmoothWind" Click="Setting_Changed" Content="Smooth Wind Transitions" Margin="0,0,0,12" IsChecked="True"/>
+                                <CheckBox x:Name="chkJetStream" Click="Setting_Changed" Content="Jet Stream Simulation" IsChecked="True"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#333333" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="TURBULENCE" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,15"/>
+                                
+                                <Grid Margin="0,0,0,15">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="180"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Turbulence Model" Foreground="#E0E0E0" VerticalAlignment="Center" FontSize="14"/>
+                                    <ComboBox x:Name="cmbTurbulenceModel" SelectionChanged="Setting_Changed" Grid.Column="1" SelectedIndex="2" Height="28">
+                                        <ComboBoxItem Content="Off"/>
+                                        <ComboBoxItem Content="Light"/>
+                                        <ComboBoxItem Content="Realistic"/>
+                                        <ComboBoxItem Content="Aggressive"/>
+                                    </ComboBox>
+                                </Grid>
+
+                                <CheckBox x:Name="chkTurbThunderstorm" Click="Setting_Changed" Content="Thunderstorm Turbulence" Margin="0,0,0,12" IsChecked="True"/>
+                                <CheckBox x:Name="chkTurbCAT" Click="Setting_Changed" Content="Clear Air Turbulence (CAT)" Margin="0,0,0,12" IsChecked="True"/>
+                                <CheckBox x:Name="chkTurbTerrain" Click="Setting_Changed" Content="Terrain / Mountain Wave Effects" IsChecked="True"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#333333" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="SIMCONNECT" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,15"/>
+                                <CheckBox x:Name="chkAutoConnect" Click="Setting_Changed" Content="Auto Connect" Margin="0,0,0,12" IsChecked="True"/>
+                                <CheckBox x:Name="chkAutoReconnect" Click="Setting_Changed" Content="Auto Reconnect" Margin="0,0,0,12" IsChecked="True"/>
+                                <CheckBox x:Name="chkStartMinimized" Click="Setting_Changed" Content="Start Minimized" Margin="0,0,0,12"/>
+                                <CheckBox x:Name="chkMinimizeToTray" Click="Setting_Changed" Content="Minimize To Tray" IsChecked="True"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#333333" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="MAP" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,15"/>
+                                
+                                <Grid Margin="0,0,0,15">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="180"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Default Map View" Foreground="#E0E0E0" VerticalAlignment="Center" FontSize="14"/>
+                                    <ComboBox x:Name="cmbDefaultMap" SelectionChanged="Setting_Changed" Grid.Column="1" SelectedIndex="0" Height="28">
+                                        <ComboBoxItem Content="Live Tracking"/>
+                                        <ComboBoxItem Content="Winds Aloft"/>
+                                        <ComboBoxItem Content="Radar"/>
+                                    </ComboBox>
+                                </Grid>
+                                
+                                <CheckBox x:Name="chkShowFlightTrail" Click="Setting_Changed" Content="Show Flight Trail" IsChecked="True"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#333333" CornerRadius="10" Padding="20" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="LOGGING &amp; MAINTENANCE" Foreground="#D87A1E" FontWeight="Bold" FontSize="13" Margin="0,0,0,15"/>
+                                
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="180"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Logging Level" Foreground="#E0E0E0" VerticalAlignment="Center" FontSize="14"/>
+                                    <ComboBox x:Name="cmbLogLevel" SelectionChanged="Setting_Changed" Grid.Column="1" SelectedIndex="1" Height="28">
+                                        <ComboBoxItem Content="Minimal"/>
+                                        <ComboBoxItem Content="Normal"/>
+                                        <ComboBoxItem Content="Debug"/>
+                                    </ComboBox>
+                                </Grid>
+                                
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Open Logs Folder" Click="BtnOpenLogs_Click" Background="#4A4A4A" Foreground="White" Width="140" Margin="0,0,15,0" Padding="0,8"/>
+                                    <Button Content="Clear Cache" Click="BtnClearCache_Click" Background="#C62828" Foreground="White" Width="120" Padding="0,8" ToolTip="Deletes temporary build folders and cached meteorological artifacts."/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#212121" BorderBrush="#404040" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <StackPanel Grid.Column="0" Margin="0,0,40,0" VerticalAlignment="Center">
+                                    <Image Source="pack://application:,,,/logo2.png" Height="28" HorizontalAlignment="Left" RenderOptions.BitmapScalingMode="HighQuality" Margin="-9,0,0,2"/>
+                                    <TextBlock Text="v2.4" Foreground="#4A4A4A" FontSize="16" FontWeight="Bold"/>
+                                    <TextBlock Text="Prepar3D Weather Engine" Foreground="#A0A0A0" FontSize="13" Margin="0,8,0,0"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                    <TextBlock Text="BUILD INFORMATION" Foreground="#555555" FontWeight="Bold" FontSize="11" Margin="0,0,0,8"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="160"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Version:" Foreground="#A0A0A0" Margin="0,0,0,5" FontSize="13"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="2.4.0.218 (Release)" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,5" FontSize="13" HorizontalAlignment="Right"/>
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Airport Database Status:" Foreground="#A0A0A0" Margin="0,0,0,5" FontSize="13"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Loaded (43,211 Stations)" Foreground="#10B981" FontWeight="SemiBold" Margin="0,0,0,5" FontSize="13" HorizontalAlignment="Right"/>
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Weather Source:" Foreground="#A0A0A0" Margin="0,0,0,5" FontSize="13"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="Open-Meteo &amp; NOAA GRIB" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,5" FontSize="13" HorizontalAlignment="Right"/>
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Build Date:" Foreground="#A0A0A0" FontSize="13"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="June 21, 2026" Foreground="White" FontWeight="SemiBold" FontSize="13" HorizontalAlignment="Right"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <Border Grid.Row="2" Background="#1E1E1E" CornerRadius="6" Margin="0,10,0,0" Padding="10,0" Height="30">
                 <Grid>
                     <TextBlock x:Name="lblStatus" Text="Sim Connection: Waiting for Simulator..." Foreground="#A0A0A0" VerticalAlignment="Center" HorizontalAlignment="Left" FontWeight="SemiBold"/>
                     <TextBlock x:Name="lblSimTime" Text="Active Time: --:--Z" Foreground="#A0A0A0" VerticalAlignment="Center" HorizontalAlignment="Right" FontWeight="SemiBold"/>
                 </Grid>
             </Border>
+
         </Grid>
     </Grid>
 </Window>
