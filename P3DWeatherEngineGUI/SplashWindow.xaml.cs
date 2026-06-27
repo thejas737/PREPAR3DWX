@@ -62,7 +62,7 @@ namespace P3DWeatherEngineGUI
         private async void SplashWindow_Loaded(object sender, RoutedEventArgs e)
         {
             // Give the user 5 seconds to appreciate the screenshot
-            await Task.Delay(5000); 
+            await Task.Delay(2000); 
 
             // Boot up the main engine
             MainWindow mainWindow = new MainWindow();

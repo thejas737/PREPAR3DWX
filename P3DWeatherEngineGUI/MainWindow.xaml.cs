@@ -31,6 +31,9 @@ namespace P3DWeatherEngineGUI
         private DateTime _lastPositionTick = DateTime.MinValue;
 
         private System.Collections.Generic.List<Waypoint> _currentFlightPlanWaypoints;
+
+        // Global storage for the latest SimBrief data so lazy-loaded tabs can access it
+        private SimBriefData _currentOfp;
         private string logDirectory;
         private string currentLogFile;
         private readonly object logLock = new object(); // Prevents thread collisions if multiple async tasks log at once
@@ -312,8 +315,11 @@ namespace P3DWeatherEngineGUI
         async void InitializeAsync()
         {
             await mapBrowser.EnsureCoreWebView2Async(null);
+            
+            // Forces the mini-map to load the simple global view
             UpdateMap(0, 0, true); 
-            Log("WebView2 mapping engines rendered.");
+            
+            Log("Conditions mini-map rendered.");
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -389,6 +395,40 @@ namespace P3DWeatherEngineGUI
             DisconnectSim();
         }
 
+        private async System.Threading.Tasks.Task CalculateEnrouteStationsAsync(System.Collections.Generic.List<Waypoint> route)
+        {
+            if (route == null || route.Count == 0) return;
+
+            LogEngineEvent($"[DISPATCH] Pre-calculating enroute weather stations for {route.Count} waypoints...", LogLevel.Debug);
+            _activeRouteStations.Clear();
+
+            // Run the heavy database looping on a background thread to prevent UI freezing
+            await System.Threading.Tasks.Task.Run(() => 
+            {
+                var depIcao = route[0].Ident;
+                var arrIcao = route[route.Count - 1].Ident;
+                if (!string.IsNullOrEmpty(depIcao)) _activeRouteStations.Add(depIcao);
+                if (!string.IsNullOrEmpty(arrIcao)) _activeRouteStations.Add(arrIcao);
+
+                foreach (var waypoint in route)
+                {
+                    var nearestStations = locator.GetNearestStations(waypoint.Latitude, waypoint.Longitude, 1);
+                    
+                    if (nearestStations != null && nearestStations.Count > 0)
+                    {
+                        var nearest = nearestStations[0];
+                        double distanceToStation = CalculateDistanceNM(waypoint.Latitude, waypoint.Longitude, nearest.Station.Latitude, nearest.Station.Longitude);
+                        
+                        if (distanceToStation <= 50 && nearest.Station.ICAO != null)
+                        {
+                            _activeRouteStations.Add(nearest.Station.ICAO);
+                        }
+                    }
+                }
+            });
+            
+            LogEngineEvent($"[DISPATCH] Found {_activeRouteStations.Count} real weather stations along the route.", LogLevel.Normal);
+        }
         private void DisconnectSim()
         {
             if (simconnect != null)
@@ -464,6 +504,11 @@ namespace P3DWeatherEngineGUI
                 _lastPositionTick = DateTime.UtcNow;
 
                 lblSimTime.Text = $"Active Time: {DateTime.UtcNow:HH:mm}Z";
+
+                // --- FULLSCREEN MAP TAB TELEMETRY ---
+                // Updates the dedicated Windy-style map every 1 second.
+                // (Passing 0 for heading and GS to guarantee a clean compile until mapped).
+                UpdateFullMap(pos.Latitude, pos.Longitude, 0, 0, pos.Altitude);
                 
                 // --- TRIGGER ASYNC REAL-WORLD WINDS ALOFT FETCH (15 Min Interval) ---
                 if ((DateTime.Now - _lastWindsFetchTime).TotalMinutes >= 15 && !_isFetchingWinds)
@@ -500,7 +545,6 @@ namespace P3DWeatherEngineGUI
                             var wx = await FetchMetarDataAsync(currentIcao);
                             // Pass it to the Smart ATIS. (Leaving TAF blank "" for now unless you have a TAF fetcher!)
                             string voiceScript = GenerateSmartAtis(currentIcao, wx.raw, ""); 
-                                                    speechEngine.SpeakAsync(voiceScript);
                             
                             isAtisPlaying = true; 
                             Log($"Broadcasting ATIS on {ATIS_FREQUENCY} MHz.");
@@ -530,13 +574,15 @@ namespace P3DWeatherEngineGUI
                         currentIcao = primaryStation.ICAO ?? "GLOB";
                         lastFetchTime = DateTime.Now;
                         
+                        // --- CONDITIONS TAB MINI-MAP UPDATE ---
+                        // Restored original behavior: Only updates when reaching a new station
                         UpdateMap(primaryStation.Latitude, primaryStation.Longitude, false);
+                        
                         await UpdateInterpolatedWeatherAsync(nearestStations);
                     }
                 }
             }
         }
-
         private string GenerateSmartAtis(string airportIdent, string rawMetar, string rawTaf)
         {
             // 1. Assign Information Letter
@@ -635,6 +681,57 @@ namespace P3DWeatherEngineGUI
             }
         }
 
+        private async System.Threading.Tasks.Task<string> FetchWindsGridAsync(System.Collections.Generic.List<Waypoint> route)
+        {
+            if (route == null || route.Count < 2) return "";
+
+            // 1. Find the Bounding Box of the flight plan
+            double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+            foreach (var wp in route)
+            {
+                if (wp.Latitude < minLat) minLat = wp.Latitude;
+                if (wp.Latitude > maxLat) maxLat = wp.Latitude;
+                if (wp.Longitude < minLon) minLon = wp.Longitude;
+                if (wp.Longitude > maxLon) maxLon = wp.Longitude;
+            }
+
+            // Expand the box slightly to give map context around the route
+            minLat -= 2; maxLat += 2; minLon -= 2; maxLon += 2;
+
+            // 2. Build a Dense 35-Point Grid (Safe for URL length and API limits!)
+            var lats = new System.Collections.Generic.List<double>();
+            var lons = new System.Collections.Generic.List<double>();
+            
+            // INCREASED DENSITY: Divided latitude by 4 and longitude by 6
+            for (double lat = minLat; lat <= maxLat; lat += (maxLat - minLat) / 5)
+            {
+                for (double lon = minLon; lon <= maxLon; lon += (maxLon - minLon) / 9)
+                {
+                    lats.Add(Math.Round(lat, 2));
+                    lons.Add(Math.Round(lon, 2));
+                }
+            }
+
+            // 3. Batch Request to Open-Meteo
+            string latString = string.Join(",", lats);
+            string lonString = string.Join(",", lons);
+            
+            // This URL will now be roughly 650 characters—well under the 2048 limit.
+            string url = $"https://api.open-meteo.com/v1/forecast?latitude={latString}&longitude={lonString}&hourly=wind_speed_250hPa,wind_direction_250hPa,wind_speed_500hPa,wind_direction_500hPa,wind_speed_700hPa,wind_direction_700hPa&wind_speed_unit=kn&forecast_days=1";
+
+            try
+            {
+                HttpResponseMessage response = await client.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadAsStringAsync();
+                }
+            }
+            catch { }
+            return "";
+        }
+        // --- BRIDGE METHOD ---
+        // Catch legacy map calls (like UI clicks) and forward them safely to the new engine
         private void UpdateMap(double lat, double lon, bool showGlobe)
         {
             if (mapBrowser == null || mapBrowser.CoreWebView2 == null) return;
@@ -677,7 +774,17 @@ namespace P3DWeatherEngineGUI
             </body>
             </html>";
 
-            mapBrowser.NavigateToString(html);
+            // Targets ONLY the mini-map
+            mapBrowser.NavigateToString(html); 
+        }
+        private void UpdateMap(double lat, double lon, double hdg, double gs, double alt, bool showGlobe)
+        {
+            if (mapBrowser == null || mapBrowser.CoreWebView2 == null) return;
+
+            // Execute raw JavaScript to update the marker position dynamically without reloading the page!
+            string jsCommand = $"updateAircraft({lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {hdg.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {gs.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {alt.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {(!showGlobe).ToString().ToLower()});";
+            
+            mapBrowser.CoreWebView2.ExecuteScriptAsync(jsCommand);
         }
 
         // ==========================================
@@ -1338,6 +1445,9 @@ namespace P3DWeatherEngineGUI
         // --- TAB NAVIGATION LOGIC ---
         // --- TAB NAVIGATION LOGIC ---
         // --- TAB NAVIGATION LOGIC ---
+        // Flag to prevent the heavy map HTML from reloading every time you switch tabs
+        private bool _isFullMapInitialized = false; 
+
         private void TabButton_Click(object sender, RoutedEventArgs e)
         {
             Button clickedBtn = (Button)sender;
@@ -1357,12 +1467,22 @@ namespace P3DWeatherEngineGUI
             ConditionsView.Visibility = Visibility.Collapsed;
             ComingSoonView.Visibility = Visibility.Collapsed;
             SettingsView.Visibility = Visibility.Collapsed; 
-            FlightPlanView.Visibility = Visibility.Collapsed; // <-- THIS WAS MISSING!
+            FlightPlanView.Visibility = Visibility.Collapsed;
+            if (this.FindName("MapView") != null) ((System.Windows.Controls.Grid)this.FindName("MapView")).Visibility = Visibility.Collapsed;
 
             // 4. Show only the requested view
             if (clickedBtn == btnTabConditions)
             {
                 ConditionsView.Visibility = Visibility.Visible;
+            }
+            else if (clickedBtn == btnTabMap) // <-- NEW MAP TAB LOGIC
+            {
+                MapView.Visibility = Visibility.Visible;
+                if (!_isFullMapInitialized)
+                {
+                    _isFullMapInitialized = true;
+                    InitializeFullMapAsync();
+                }
             }
             else if (clickedBtn == btnTabSettings)
             {
@@ -1376,6 +1496,201 @@ namespace P3DWeatherEngineGUI
             {
                 ComingSoonView.Visibility = Visibility.Visible; 
             }
+        }
+
+        private async void InitializeFullMapAsync()
+        {
+            await fullMapBrowser.EnsureCoreWebView2Async(null);
+            
+            // Wait for the HTML and Leaflet JS to physically finish loading in the browser!
+            fullMapBrowser.NavigationCompleted += async (sender, args) =>
+            {
+                // If a flight plan was already downloaded before this tab was opened, draw it now!
+                if (_currentOfp != null)
+                {
+                    await PushLiveAirportsToMapAsync(_currentOfp);
+                }
+            };
+            
+            fullMapBrowser.NavigateToString(GenerateFullMapHtml());
+            Log("Dedicated Layered Map Engine initialized.");
+        }
+
+        public void UpdateFullMap(double lat, double lon, double hdg, double gs, double alt)
+        {
+            if (fullMapBrowser == null || fullMapBrowser.CoreWebView2 == null) return;
+
+            // Injects live telemetry into the JS layer manager without reloading the page
+            string jsCommand = $"updateAircraft({lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}, " +
+                               $"{lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}, " +
+                               $"{hdg.ToString(System.Globalization.CultureInfo.InvariantCulture)}, " +
+                               $"{gs.ToString(System.Globalization.CultureInfo.InvariantCulture)}, " +
+                               $"{alt.ToString(System.Globalization.CultureInfo.InvariantCulture)});";
+            
+            fullMapBrowser.CoreWebView2.ExecuteScriptAsync(jsCommand);
+        }
+
+        private string GenerateFullMapHtml()
+        {
+            return @"<!DOCTYPE html>
+            <html>
+            <head>
+                <link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' />
+                <script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script>
+                <style>
+                    /* Changed font-family to Product Sans */
+                    body { padding: 0; margin: 0; background-color: #111; color: #E0E0E0; font-family: 'Product Sans', 'Segoe UI', Tahoma, sans-serif; overflow: hidden; }
+                    #map { height: 100vh; width: 100vw; z-index: 1; }
+                    .leaflet-control-attribution, .leaflet-control-zoom { display: none !important; }
+                    .glass-panel { position: absolute; background: rgba(25, 25, 25, 0.85); border: 1px solid #444; border-radius: 8px; z-index: 1000; backdrop-filter: blur(8px); }
+                    #toolbar { top: 20px; left: 20px; display: flex; flex-direction: column; padding: 5px; gap: 5px; }
+                    .tool-btn { width: 36px; height: 36px; background: #333; border: 1px solid #555; color: #aaa; cursor: pointer; border-radius: 6px; font-size: 14px; }
+                    .tool-btn.active { background: #D87A1E; color: #fff; border-color: #D87A1E; }
+                    #layers-panel { top: 20px; right: 20px; width: 220px; padding: 15px; }
+                    .layer-header { font-size: 11px; font-weight: bold; color: #D87A1E; margin: 10px 0 5px 0; text-transform: uppercase; border-bottom: 1px solid #444; }
+                    .layer-toggle { display: flex; align-items: center; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
+                    .layer-toggle input { margin-right: 8px; accent-color: #D87A1E; }
+                    
+                    /* Pushed right margin to 290px to prevent overlap */
+                    #winds-selector { top: 20px; right: 290px; display: flex; padding: 5px; gap: 2px; display: none; }
+                    
+                    .alt-btn { background: transparent; color: #aaa; border: none; padding: 6px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: bold; font-family: 'Product Sans', 'Segoe UI', sans-serif; }
+                    .alt-btn.active { background: #555; color: #D87A1E; }
+                    #status-bar { bottom: 0; left: 0; width: 100%; height: 30px; background: rgba(15, 15, 15, 0.95); border-top: 1px solid #333; z-index: 1000; position: absolute; display: flex; align-items: center; padding: 0 15px; font-size: 12px; color: #888; }
+                    .status-item { margin-right: 25px; }
+                    .status-val { color: #fff; font-weight: bold; margin-left: 5px; }
+                    .leaflet-popup-content-wrapper { background: #222; color: #E0E0E0; border: 1px solid #444; border-radius: 8px; font-family: 'Product Sans', 'Segoe UI', sans-serif; }
+                    .leaflet-popup-tip { background: #222; }
+                    .pop-title { font-size: 18px; font-weight: bold; color: #D87A1E; margin: 0 0 10px 0; border-bottom: 1px solid #444; padding-bottom: 5px; }
+                    .pop-row { margin-bottom: 5px; font-size: 12px; }
+                    .pop-row span { color: #aaa; width: 60px; display: inline-block; }
+                    .pop-btn { margin-top: 10px; background: #444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; width: 48%; font-size: 11px; font-family: 'Product Sans', 'Segoe UI', sans-serif; }
+                    .pop-btn.primary { background: #D87A1E; }
+                </style>
+            </head>
+            <body>
+                <div id='map'></div>
+                
+                <div id='toolbar' class='glass-panel'>
+                    <button class='tool-btn active'>🗺️</button>
+                    <button class='tool-btn' onclick='document.getElementById(""layers-panel"").style.display = document.getElementById(""layers-panel"").style.display === ""none"" ? ""block"" : ""none"";'>⚙️</button>
+                </div>
+                
+                <div id='winds-selector' class='glass-panel'>
+                    <button class='alt-btn' data-lvl='10k' onclick='changeWindAlt(this)'>FL100</button>
+                    <button class='alt-btn' data-lvl='24k' onclick='changeWindAlt(this)'>FL240</button>
+                    <button class='alt-btn active' data-lvl='36k' onclick='changeWindAlt(this)'>FL360</button>
+                </div>
+                
+                <div id='layers-panel' class='glass-panel'>
+                    <div class='layer-header'>Aviation</div>
+                    <label class='layer-toggle'><input type='checkbox' checked onchange='toggleLayer(this, aircraftLayer)'> Aircraft Position</label>
+                    <label class='layer-toggle'><input type='checkbox' checked onchange='toggleLayer(this, routeLayer)'> Flight Route</label>
+                    <label class='layer-toggle'><input type='checkbox' onchange='toggleLayer(this, airportsLayer)'> Airports (METAR)</label>
+                    <div class='layer-header'>Meteorology</div>
+                    <label class='layer-toggle'><input type='checkbox' onchange='toggleWinds(this)'> Winds Aloft</label>
+                    <label class='layer-toggle'><input type='checkbox' onchange='toggleLayer(this, radarLayer)'> Wx Radar (Placeholder)</label>
+                    <label class='layer-toggle'><input type='checkbox' onchange='toggleLayer(this, turbulenceLayer)'> Turbulence (Placeholder)</label>
+                </div>
+
+                <div id='status-bar'>
+                    <div class='status-item'>Cursor: <span class='status-val' id='sb-coords'>-- / --</span></div>
+                    <div class='status-item'>Elev: <span class='status-val' id='sb-elev'>-- ft</span></div>
+                    <div class='status-item'>Wind: <span class='status-val' id='sb-wind'>-- / --</span></div>
+                </div>
+
+                <script>
+                    var map = L.map('map', { zoomControl: false }).setView([25, 55], 4);
+                    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+
+                    var aircraftLayer = L.layerGroup().addTo(map);
+                    var routeLayer = L.layerGroup().addTo(map);
+                    var airportsLayer = L.layerGroup();
+                    var windsLayer = L.layerGroup();
+                    var radarLayer = L.layerGroup();
+                    var turbulenceLayer = L.layerGroup();
+
+                    // Wind Global Storage
+                    var activeWindData = null;
+                    var activeUtcHour = 0;
+                    var activeFlightLevel = '36k'; // Default to FL360 (250hPa)
+
+                    function toggleLayer(cb, layer) { cb.checked ? map.addLayer(layer) : map.removeLayer(layer); }
+                    function toggleWinds(cb) {
+                        toggleLayer(cb, windsLayer);
+                        document.getElementById('winds-selector').style.display = cb.checked ? 'flex' : 'none';
+                    }
+
+                    // --- SVG WIND BARB MATH ---
+                    function getWindBarbIcon(speed, dir) {
+                        let svg = `<svg width=""40"" height=""40"" viewBox=""0 0 40 40"" style=""transform: rotate(${dir}deg); transform-origin: 20px 20px;"">`;
+                        svg += `<circle cx=""20"" cy=""20"" r=""2.5"" fill=""#D87A1E""/>`; 
+                        svg += `<line x1=""20"" y1=""20"" x2=""20"" y2=""2"" stroke=""#E0E0E0"" stroke-width=""1.5""/>`;
+                        
+                        let y = 2; let s = speed;
+                        while(s >= 50) { svg += `<polygon points=""20,${y} 20,${y+5} 28,${y+2}"" fill=""#E0E0E0""/>`; s -= 50; y += 6; }
+                        while(s >= 10) { svg += `<line x1=""20"" y1=""${y}"" x2=""28"" y2=""${y-4}"" stroke=""#E0E0E0"" stroke-width=""1.5""/>`; s -= 10; y += 4; }
+                        if(s >= 5) { svg += `<line x1=""20"" y1=""${y}"" x2=""24"" y2=""${y-2}"" stroke=""#E0E0E0"" stroke-width=""1.5""/>`; }
+                        svg += `</svg>`;
+                        
+                        return L.divIcon({ className: '', html: svg, iconSize: [40, 40], iconAnchor: [20, 20] });
+                    }
+
+                    // --- RENDER LIVE WINDS FROM C# ---
+                    function buildRealWindsGrid(apiData, currentHour) {
+                        activeWindData = apiData;
+                        activeUtcHour = currentHour;
+                        drawWinds();
+                    }
+
+                    function changeWindAlt(btn) {
+                        document.querySelectorAll('.alt-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        activeFlightLevel = btn.getAttribute('data-lvl');
+                        drawWinds(); // Redraw map without needing a new API call!
+                    }
+
+                    function drawWinds() {
+                        if (!activeWindData) return;
+                        windsLayer.clearLayers();
+                        
+                        // Open-Meteo batch response arrays
+                        let lats = activeWindData.latitude || [activeWindData.latitude];
+                        let lons = activeWindData.longitude || [activeWindData.longitude];
+                        
+                        // If it's a batch request, open-meteo returns an array of forecast objects
+                        let locations = Array.isArray(activeWindData) ? activeWindData : [activeWindData];
+                        
+                        locations.forEach((loc, index) => {
+                            let spdKey = activeFlightLevel === '36k' ? 'wind_speed_250hPa' : (activeFlightLevel === '24k' ? 'wind_speed_500hPa' : 'wind_speed_700hPa');
+                            let dirKey = activeFlightLevel === '36k' ? 'wind_direction_250hPa' : (activeFlightLevel === '24k' ? 'wind_direction_500hPa' : 'wind_direction_700hPa');
+                            
+                            let spd = Math.round(loc.hourly[spdKey][activeUtcHour]);
+                            let dir = Math.round(loc.hourly[dirKey][activeUtcHour]);
+                            
+                            let marker = L.marker([loc.latitude, loc.longitude], {icon: getWindBarbIcon(spd, dir), interactive: true}).addTo(windsLayer);
+                            
+                            marker.on('mouseover', function() { document.getElementById('sb-wind').innerText = `${dir}° @ ${spd} kt`; document.getElementById('sb-wind').style.color = '#D87A1E'; });
+                            marker.on('mouseout', function() { document.getElementById('sb-wind').innerText = '-- / --'; document.getElementById('sb-wind').style.color = '#fff'; });
+                        });
+                    }
+
+                    // PLACEHOLDERS (Removed Dummy Winds & Airports, kept radar/turb so you can still test toggles)
+                    L.circle([24.5, 54.5], { radius: 100000, color: 'none', fillColor: '#3B82F6', fillOpacity: 0.4 }).addTo(radarLayer);
+                    L.polygon([[22, 50], [24, 52], [22, 54]], {color: '#F59E0B', weight: 1, fillColor: '#F59E0B', fillOpacity: 0.3}).addTo(turbulenceLayer);
+
+                    var planeMarker;
+                    function updateAircraft(lat, lon, hdg, gs, alt) {
+                        if(!planeMarker) {
+                            var icon = L.divIcon({ className: 'ac-icon', html: ""<div style='background-color:#D87A1E; width:16px; height:16px; border-radius:50%; border:2px solid white;'></div>"", iconSize: [16, 16], iconAnchor: [8, 8] });
+                            planeMarker = L.marker([lat, lon], {icon: icon}).addTo(aircraftLayer);
+                        } else planeMarker.setLatLng([lat, lon]);
+                    }
+
+                    map.on('mousemove', function(e) { document.getElementById('sb-coords').innerText = e.latlng.lat.toFixed(4) + '° / ' + e.latlng.lng.toFixed(4) + '°'; });
+                </script>
+            </body>
+            </html>";
         }
 
         #region FLIGHT PLAN & DISPATCH CENTER
@@ -1608,7 +1923,7 @@ namespace P3DWeatherEngineGUI
             LogEngineEvent($"[CORRIDOR SYNC] Background weather refresh complete.", LogLevel.Debug);
         }
 
-        private async void BtnImportSimbrief_Click(object sender, RoutedEventArgs e)
+        private async void BtnImportSimbrief_Click(object sender, RoutedEventArgs e)    
         {
             string username = txtSimbriefId.Text.Trim();
             if (string.IsNullOrEmpty(username))
@@ -1624,10 +1939,6 @@ namespace P3DWeatherEngineGUI
             {
                 SimBriefService sbService = new SimBriefService();
                 SimBriefData ofp = await sbService.FetchLatestOFPAsync(username);
-
-                // Populate Acquisition TextBoxes
-                txtFpDep.Text = ofp.DepartureICAO;
-                txtFpArr.Text = ofp.ArrivalICAO;
 
                 // Populate Dispatch Summary Card
                 lblBriefFlight.Text = $"{ofp.Airline}{ofp.FlightNumber}";
@@ -1675,7 +1986,15 @@ namespace P3DWeatherEngineGUI
                 }
 
                 _currentFlightPlanWaypoints = combinedRoute;
+                
+                // --- NEW: PRE-CALCULATE STATIONS FIRST ---
+                await CalculateEnrouteStationsAsync(_currentFlightPlanWaypoints);
+                
                 BtnInjectPlanWx.IsEnabled = true;
+                
+                // --- NEW: SAVE GLOBALLY AND PUSH TO MAP ---
+                _currentOfp = ofp; // Save it for the Map tab!
+                await PushLiveAirportsToMapAsync(ofp);
                 
             }
             catch (Exception ex)
@@ -1774,6 +2093,166 @@ namespace P3DWeatherEngineGUI
             }
         }
         
+        private string GetFlightCategory(string metar)
+        {
+            if (string.IsNullOrEmpty(metar)) return "VFR";
+            
+            bool isLifr = false, isIfr = false, isMvfr = false;
+            
+            // Visibility parsing (SM or Meters)
+            var visMatchSM = System.Text.RegularExpressions.Regex.Match(metar, @"\b(\d+)(/\d+)?SM\b");
+            var visMatchM = System.Text.RegularExpressions.Regex.Match(metar, @"(?<=\s|^)(\d{4})(?=\s|NDV|$)");
+            
+            double visSM = 10;
+            if (visMatchSM.Success) {
+                double.TryParse(visMatchSM.Groups[1].Value, out visSM);
+            } else if (visMatchM.Success) {
+                if (double.TryParse(visMatchM.Groups[1].Value, out double visM))
+                    visSM = visM >= 9999 ? 10 : visM / 1609.34;
+            }
+
+            // Ceiling parsing (Looking for Broken, Overcast, or Vertical Visibility)
+            var cloudMatches = System.Text.RegularExpressions.Regex.Matches(metar, @"(BKN|OVC|VV)(\d{3})");
+            int lowestCeiling = 999;
+            foreach (System.Text.RegularExpressions.Match m in cloudMatches)
+            {
+                if (int.TryParse(m.Groups[2].Value, out int cld))
+                    if (cld < lowestCeiling) lowestCeiling = cld;
+            }
+
+            // Standard Aviation Minimums
+            if (visSM < 1 || lowestCeiling < 5) isLifr = true;
+            else if (visSM < 3 || lowestCeiling < 10) isIfr = true;
+            else if (visSM <= 5 || lowestCeiling <= 30) isMvfr = true;
+
+            if (isLifr) return "LIFR";
+            if (isIfr) return "IFR";
+            if (isMvfr) return "MVFR";
+            return "VFR";
+        }
+
+        private async System.Threading.Tasks.Task PushLiveAirportsToMapAsync(SimBriefData ofp)
+        {
+            if (fullMapBrowser == null || fullMapBrowser.CoreWebView2 == null) return;
+
+            // 1. NO-OFP FALLBACK PROMPT
+            if (ofp == null || ofp.RouteWaypoints == null || ofp.RouteWaypoints.Count < 2)
+            {
+                string jsPrompt = "airportsLayer.clearLayers(); routeLayer.clearLayers(); " +
+                                  "L.popup().setLatLng(map.getCenter()).setContent(\"<div class='pop-title'>NO OFP LOADED</div><div class='pop-row'>Please import a SimBrief Flight Plan first from the Flight Plan page to enable live airport data without overloading the API servers.</div>\").openOn(map);";
+                _ = fullMapBrowser.CoreWebView2.ExecuteScriptAsync(jsPrompt);
+                return;
+            }
+
+            // 2. CLEAR DUMMY DATA
+            string jsCommand = "airportsLayer.clearLayers();\nrouteLayer.clearLayers();\n";
+
+            // 3. DRAW THE MAGENTA ROUTE LINE
+            var coordsList = new System.Collections.Generic.List<string>();
+            foreach (var wp in ofp.RouteWaypoints)
+            {
+                coordsList.Add($"[{wp.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {wp.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}]");
+            }
+            string jsCoords = string.Join(",", coordsList);
+            
+            jsCommand += $@"
+                var routeCoords = [{jsCoords}];
+                var routeLine = L.polyline(routeCoords, {{ color: '#FF00FF', weight: 3, opacity: 0.9, lineJoin: 'round' }}).addTo(routeLayer);
+                routeCoords.forEach(function(coord) {{ L.circleMarker(coord, {{ radius: 2, color: '#FFFFFF', weight: 1, fillOpacity: 1 }}).addTo(routeLayer); }});
+                map.fitBounds(routeLine.getBounds(), {{ padding: [30, 30] }});
+            ";
+
+            // 4. EXTRACT CRITICAL OFP STATIONS & ENROUTE AIRPORTS SAFELY
+            // Using a dictionary to pair the ICAO directly with its precise Map Coordinates
+            var stationsToPlot = new System.Collections.Generic.Dictionary<string, (double lat, double lon)>();
+
+            if (!string.IsNullOrEmpty(ofp.DepartureICAO))
+                stationsToPlot[ofp.DepartureICAO] = (ofp.RouteWaypoints[0].Latitude, ofp.RouteWaypoints[0].Longitude);
+                
+            if (!string.IsNullOrEmpty(ofp.ArrivalICAO))
+                stationsToPlot[ofp.ArrivalICAO] = (ofp.RouteWaypoints[ofp.RouteWaypoints.Count - 1].Latitude, ofp.RouteWaypoints[ofp.RouteWaypoints.Count - 1].Longitude);
+
+            if (ofp.AlternateWaypoints != null && ofp.AlternateWaypoints.Count > 0)
+            {
+                var altn = ofp.AlternateWaypoints[ofp.AlternateWaypoints.Count - 1];
+                if (!string.IsNullOrEmpty(altn.Ident))
+                    stationsToPlot[altn.Ident] = (altn.Latitude, altn.Longitude);
+            }
+
+            // Match the _activeRouteStations back to their exact coordinates using the locator safely
+            foreach (var wp in ofp.RouteWaypoints)
+            {
+                var nearestList = locator.GetNearestStations(wp.Latitude, wp.Longitude, 1);
+                if (nearestList != null && nearestList.Count > 0)
+                {
+                    var stn = nearestList[0].Station;
+                    if (stn.ICAO != null && _activeRouteStations.Contains(stn.ICAO))
+                    {
+                        stationsToPlot[stn.ICAO] = (stn.Latitude, stn.Longitude);
+                    }
+                }
+            }
+
+            // 5. FETCH LIVE WEATHER FOR PRE-CALCULATED STATIONS
+            int stationsPlotted = 0;
+            foreach (var kvp in stationsToPlot)
+            {
+                string icao = kvp.Key;
+                double lat = kvp.Value.lat;
+                double lon = kvp.Value.lon;
+
+                var wx = await FetchMetarDataAsync(icao);
+                if (string.IsNullOrEmpty(wx.raw)) continue;
+
+                string cat = GetFlightCategory(wx.raw);
+                string catColor = cat == "VFR" ? "#10B981" : cat == "MVFR" ? "#F59E0B" : cat == "IFR" ? "#EF4444" : "#8B5CF6";
+
+                string roleTag = "";
+                if (icao == ofp.DepartureICAO) roleTag = " - DEPARTURE";
+                else if (icao == ofp.ArrivalICAO) roleTag = " - ARRIVAL";
+                else if (ofp.AlternateWaypoints != null && ofp.AlternateWaypoints.Any(a => a.Ident == icao)) roleTag = " - ALTERNATE";
+
+                string popupHtml = $@"
+                    <div class='pop-title'>{icao}{roleTag}</div>
+                    <div class='pop-row'><span>Cat:</span> <b style='color:{catColor}'>{cat}</b></div>
+                    <div class='pop-row'><span>METAR:</span> {wx.raw}</div>
+                    <div class='pop-row'><span>Wind:</span> {wx.wdir:D3}° @ {wx.wspd} kts</div>
+                    <div class='pop-row'><span>Temp:</span> {wx.temp}°C (Dew: {wx.dew}°C)</div>
+                    <div class='pop-row'><span>Altimeter:</span> {wx.alt:F2}</div>
+                    <button class='pop-btn primary'>Inject WX</button> <button class='pop-btn' style='float:right;'>Refresh</button>
+                ";
+
+                jsCommand += $@"
+                    var icon_{icao} = L.divIcon({{ className: '', html: ""<div style='background:{catColor}; width:12px; height:12px; border-radius:50%; border:2px solid #000; box-shadow:0 0 4px #000;'></div>"", iconSize:[12,12], iconAnchor:[6,6] }});
+                    var marker_{icao} = L.marker([{lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}], {{icon: icon_{icao}}}).addTo(airportsLayer);
+                    marker_{icao}.bindPopup(`{popupHtml}`, {{maxWidth: 300}});
+                ";
+                stationsPlotted++;
+            }
+
+            // --- NEW WIND GRID INJECTION ---
+            string gridJson = await FetchWindsGridAsync(ofp.RouteWaypoints);
+            if (!string.IsNullOrEmpty(gridJson))
+            {
+                int currentHour = DateTime.UtcNow.Hour;
+                
+                // We pass the massive JSON block and the current hour directly to JavaScript
+                // so the browser handles the heavy UI lifting and alt-switching!
+                jsCommand += $@"
+                    var windApiData = {gridJson};
+                    var currentUtcHour = {currentHour};
+                    
+                    // We call the new JS function (which we will add in Step 3)
+                    if(typeof buildRealWindsGrid === 'function') {{
+                        buildRealWindsGrid(windApiData, currentUtcHour);
+                    }}
+                ";
+            }
+
+            // 6. INJECT INTO LEAFLET ENGINE
+            _ = fullMapBrowser.CoreWebView2.ExecuteScriptAsync(jsCommand);
+            LogEngineEvent($"[MAP] Drew flight route and pushed {stationsPlotted} live OFP airports to the map layer.", LogLevel.Normal);
+        }
 
         private async Task GenerateFlightBriefingAsync(string depIcao, string arrIcao, System.Collections.Generic.List<Waypoint> waypoints)
         {
@@ -1947,6 +2426,152 @@ namespace P3DWeatherEngineGUI
             if (metarLowVis && !tafLowVis) return "Improving: Visibility Increasing";
 
             return "Stable";
+        }
+
+        private string GenerateMapHtml()
+        {
+            return @"<!DOCTYPE html>
+            <html>
+            <head>
+                <link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' />
+                <script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script>
+                <style>
+                    body { padding: 0; margin: 0; background-color: #111; color: #E0E0E0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+                    #map { height: 100vh; width: 100vw; z-index: 1; }
+                    .leaflet-control-attribution { display: none !important; }
+                    
+                    /* Floating UI Base Styles */
+                    .floating-panel { position: absolute; background: rgba(30, 30, 30, 0.9); border: 1px solid #444; border-radius: 8px; z-index: 1000; box-shadow: 0 4px 6px rgba(0,0,0,0.5); backdrop-filter: blur(5px); }
+                    
+                    /* Left Toolbar */
+                    #toolbar { top: 20px; left: 20px; width: 45px; display: flex; flex-direction: column; padding: 5px 0; }
+                    .tool-btn { width: 100%; height: 40px; background: transparent; border: none; color: #aaa; cursor: pointer; border-left: 3px solid transparent; transition: 0.2s; font-size: 18px; }
+                    .tool-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
+                    .tool-btn.active { color: #D87A1E; border-left: 3px solid #D87A1E; background: rgba(216, 122, 30, 0.1); }
+                    
+                    /* Right Layers Panel */
+                    #layers-panel { top: 20px; right: 20px; width: 220px; padding: 10px; }
+                    .layer-header { font-size: 12px; font-weight: bold; color: #D87A1E; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #444; padding-bottom: 4px; }
+                    .layer-toggle { display: flex; align-items: center; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
+                    .layer-toggle input { margin-right: 8px; cursor: pointer; accent-color: #D87A1E; }
+                    
+                    /* Winds Aloft Altitude Slider */
+                    #winds-selector { top: 20px; right: 260px; display: flex; gap: 5px; background: rgba(30,30,30,0.9); padding: 5px; border-radius: 6px; border: 1px solid #444; z-index: 1000; position: absolute; }
+                    .alt-btn { background: #333; color: #aaa; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+                    .alt-btn.active { background: #D87A1E; color: #fff; font-weight: bold; }
+                    
+                    /* Bottom Status Bar */
+                    #status-bar { bottom: 0; left: 0; width: 100%; height: 28px; background: rgba(20, 20, 20, 0.95); border-top: 1px solid #333; z-index: 1000; position: absolute; display: flex; align-items: center; padding: 0 15px; font-size: 12px; color: #aaa; gap: 20px; }
+                    .status-item span { color: #fff; font-weight: bold; margin-left: 5px; }
+                    
+                    /* Aircraft Icon */
+                    .aircraft-icon { transition: all 1s linear; }
+                </style>
+            </head>
+            <body>
+                <div id='map'></div>
+                
+                <div id='toolbar' class='floating-panel'>
+                    <button class='tool-btn active' title='Standard Map'>🗺️</button>
+                    <button class='tool-btn' title='Radar'>📡</button>
+                    <button class='tool-btn' title='Clouds'>☁️</button>
+                    <button class='tool-btn' title='Winds'>💨</button>
+                </div>
+                
+                <div id='winds-selector'>
+                    <button class='alt-btn active'>SFC</button>
+                    <button class='alt-btn'>FL100</button>
+                    <button class='alt-btn'>FL180</button>
+                    <button class='alt-btn'>FL240</button>
+                    <button class='alt-btn'>FL300</button>
+                    <button class='alt-btn'>FL360</button>
+                    <button class='alt-btn'>FL450</button>
+                </div>
+                
+                <div id='layers-panel' class='floating-panel'>
+                    <div class='layer-header'>Aviation</div>
+                    <label class='layer-toggle'><input type='checkbox' id='chkAircraft' checked onchange='toggleLayer(this, aircraftLayer)'> Aircraft Position</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkRoute' checked onchange='toggleLayer(this, routeLayer)'> Flight Route</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkAirports' onchange='toggleLayer(this, airportsLayer)'> Airports (METAR)</label>
+                    
+                    <div class='layer-header' style='margin-top:10px;'>Meteorology</div>
+                    <label class='layer-toggle'><input type='checkbox' id='chkRadar' onchange='toggleLayer(this, radarLayer)'> Weather Radar</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkClouds' onchange='toggleLayer(this, cloudsLayer)'> Cloud Coverage</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkWinds' onchange='toggleLayer(this, windsLayer)'> Winds Aloft</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkTurb' onchange='toggleLayer(this, turbulenceLayer)'> Turbulence</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkLightning' onchange='toggleLayer(this, lightningLayer)'> Lightning</label>
+                    
+                    <div class='layer-header' style='margin-top:10px;'>Advisories</div>
+                    <label class='layer-toggle'><input type='checkbox' id='chkSigmet' onchange='toggleLayer(this, sigmetLayer)'> SIGMETs</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkAirmet' onchange='toggleLayer(this, airmetLayer)'> AIRMETs</label>
+                    <label class='layer-toggle'><input type='checkbox' id='chkTaf' onchange='toggleLayer(this, tafLayer)'> TAF Reports</label>
+                </div>
+
+                <div id='status-bar'>
+                    <div class='status-item'>Cursor: <span id='statCoords'>-- / --</span></div>
+                    <div class='status-item'>Elev: <span id='statElev'>-- ft</span></div>
+                    <div class='status-item'>Wind: <span id='statWind'>-- kt</span></div>
+                    <div class='status-item'>Temp: <span id='statTemp'>-- °C</span></div>
+                </div>
+
+                <script>
+                    var map = L.map('map', { zoomControl: false }).setView([20, 0], 2);
+                    
+                    // BASE MAP LAYER
+                    var baseMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                        subdomains: 'abcd', maxZoom: 20
+                    }).addTo(map);
+
+                    // INITIALIZE INDEPENDENT LAYER GROUPS
+                    var aircraftLayer = L.layerGroup().addTo(map);
+                    var routeLayer = L.layerGroup().addTo(map);
+                    var airportsLayer = L.layerGroup();
+                    var radarLayer = L.layerGroup();
+                    var cloudsLayer = L.layerGroup();
+                    var windsLayer = L.layerGroup();
+                    var turbulenceLayer = L.layerGroup();
+                    var lightningLayer = L.layerGroup();
+                    var sigmetLayer = L.layerGroup();
+                    var airmetLayer = L.layerGroup();
+                    var tafLayer = L.layerGroup();
+
+                    // Aircraft Marker Variable
+                    var planeMarker = null;
+
+                    // Expose toggle logic
+                    function toggleLayer(checkbox, layer) {
+                        if(checkbox.checked) map.addLayer(layer);
+                        else map.removeLayer(layer);
+                    }
+
+                    // Expose Aircraft Update Logic to C#
+                    // Now handles lat, lon, heading, groundspeed, and altitude!
+                    function updateAircraft(lat, lon, hdg, gs, alt, doPan) {
+                        if(!planeMarker) {
+                            var icon = L.divIcon({
+                                className: 'aircraft-icon',
+                                html: ""<div style='background-color:#D87A1E; width:14px; height:14px; border-radius:50%; border:2px solid white;'></div>"",
+                                iconSize: [14, 14], iconAnchor: [7, 7]
+                            });
+                            planeMarker = L.marker([lat, lon], {icon: icon}).addTo(aircraftLayer);
+                        } else {
+                            planeMarker.setLatLng([lat, lon]);
+                        }
+                        
+                        if(doPan) map.panTo([lat, lon]);
+                    }
+
+                    // Live Status Bar Mouse Tracker
+                    map.on('mousemove', function(e) {
+                        document.getElementById('statCoords').innerText = e.latlng.lat.toFixed(4) + '° / ' + e.latlng.lng.toFixed(4) + '°';
+                        // Placeholders for future APIs
+                        document.getElementById('statElev').innerText = '120 ft';
+                        document.getElementById('statWind').innerText = '270/15';
+                        document.getElementById('statTemp').innerText = '15 °C';
+                    });
+                </script>
+            </body>
+            </html>";
         }
 
         private async Task DrawFlightPlanMapAsync(System.Collections.Generic.List<Waypoint> waypoints)
