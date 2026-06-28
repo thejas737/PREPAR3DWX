@@ -4,6 +4,12 @@ SkyNexus is a modern, high-performance real-time weather injection engine built 
 
 By pulling data from standard aviation channels (NOAA/VATSIM) and upper-level GRIB models (Open-Meteo), SkyNexus acts as a fully-fledged virtual dispatch and meteorology center for flight simulation.
 
+## 🚧 Project Status: Massive Work in Progress
+
+Please note that SkyNexus is currently under active, heavy development. While the core engine routing (live METARs, flight plan parsing, and Open-Meteo winds aloft grids) is highly functional, the application as a whole is still a **massive work in progress**. 
+
+You may encounter bugs, unhandled exceptions, unoptimized code paths, or UI elements labeled "Coming Soon." The internal architecture and feature set are subject to rapid and significant changes. Please use this software at your own discretion, and feel free to open an issue if you spot something broken!
+
 ## ✨ Key Features
 
 * **SimBrief Integration:** One-click import of your operational flight plan (OFP). Automatically parses your route, altitudes, and alternate waypoints.
