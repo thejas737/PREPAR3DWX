@@ -4,6 +4,12 @@ SkyNexus is a modern, high-performance real-time weather injection engine built 
 
 By pulling data from standard aviation channels (NOAA/VATSIM) and upper-level GRIB models (Open-Meteo), SkyNexus acts as a fully-fledged virtual dispatch and meteorology center for flight simulation.
 
+## 🚧 Project Status: Massive Work in Progress
+
+Please note that SkyNexus is currently under active, heavy development. While the core engine routing (live METARs, flight plan parsing, and Open-Meteo winds aloft grids) is highly functional, the application as a whole is still a **massive work in progress**. 
+
+You may encounter bugs, unhandled exceptions, unoptimized code paths, or UI elements labeled "Coming Soon." The internal architecture and feature set are subject to rapid and significant changes. Please use this software at your own discretion, and feel free to open an issue if you spot something broken!
+
 ## ✨ Key Features
 
 * **SimBrief Integration:** One-click import of your operational flight plan (OFP). Automatically parses your route, altitudes, and alternate waypoints.
@@ -37,5 +43,5 @@ Run the following publish command. This bundles the app for 64-bit Windows:
 (Note: Change --self-contained false to true if you want to bundle the .NET runtime with the app, which makes the file size larger but doesn't require users to install .NET).
 
 Locate your .exe: Once the build completes successfully, navigate to:
-*C:\Users\<User>\Documents\<User>\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
+*C:\Users\\<User>\Documents\\<User>\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
 Inside this folder, you will find SkyNexus.exe (or your configured executable name) along with its required .dll files. You can move this entire folder anywhere on your PC to use the weather engine!
