@@ -43,5 +43,5 @@ Run the following publish command. This bundles the app for 64-bit Windows:
 (Note: Change --self-contained false to true if you want to bundle the .NET runtime with the app, which makes the file size larger but doesn't require users to install .NET).
 
 Locate your .exe: Once the build completes successfully, navigate to:
-*C:\Users\<User>\Documents\<User>\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
+*C:\Users\\<User>\Documents\\<User>\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
 Inside this folder, you will find SkyNexus.exe (or your configured executable name) along with its required .dll files. You can move this entire folder anywhere on your PC to use the weather engine!
