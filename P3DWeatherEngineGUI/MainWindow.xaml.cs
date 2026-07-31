@@ -48,6 +48,8 @@ namespace P3DWeatherEngineGUI
 
         public List<Waypoint> AlternateWaypoints { get; set; } = new List<Waypoint>();
         private System.Windows.Threading.DispatcherTimer _vatsimSyncTimer;
+
+        
         
         #region DIRECTORIES & SETTINGS PERSISTENCE
         private void InitializeDirectories()
@@ -132,38 +134,37 @@ namespace P3DWeatherEngineGUI
 
         public void LogEngineEvent(string message, LogLevel eventLevel)
         {
-            // Default to Normal if accessed before UI loads
             LogLevel userSelectedLevel = LogLevel.Normal;
-
-            // Safely read the UI ComboBox 
             Dispatcher.Invoke(() => {
-                if (cmbLogLevel != null)
-                {
-                    userSelectedLevel = (LogLevel)cmbLogLevel.SelectedIndex;
-                }
+                if (cmbLogLevel != null) userSelectedLevel = (LogLevel)cmbLogLevel.SelectedIndex;
             });
 
-            // Only log if the event is important enough based on the user's setting
             if (eventLevel <= userSelectedLevel)
             {
                 string logEntry = $"[{DateTime.UtcNow:HH:mm:ssZ}] [{eventLevel.ToString().ToUpper()}] {message}";
                 
-                // 1. Write to the .txt log file safely
-                lock (logLock)
+                // OFF-LOAD FILE WRITING: Prevents Windows from freezing the app to scan the .txt file!
+                System.Threading.Tasks.Task.Run(() => 
                 {
-                    try
+                    lock (logLock)
                     {
-                        File.AppendAllText(currentLogFile, logEntry + Environment.NewLine);
+                        try { File.AppendAllText(currentLogFile, logEntry + Environment.NewLine); }
+                        catch { }
                     }
-                    catch { /* Fail silently to prevent weather engine crashes over file-locks */ }
-                }
+                });
 
-                // 2. Write to the UI Engine Console safely
-                Dispatcher.Invoke(() => {
+                Dispatcher.Invoke(() => 
+                {
                     if (txtConsole != null)
                     {
                         txtConsole.AppendText(logEntry + Environment.NewLine);
-                        txtConsole.ScrollToEnd(); // Automatically scroll down to the newest message
+                        
+                        // PREVENT WPF MEMORY LEAK: Keep the UI console clean and lightning fast
+                        if (txtConsole.Text.Length > 10000)
+                        {
+                            txtConsole.Text = txtConsole.Text.Substring(txtConsole.Text.Length - 5000);
+                        }
+                        txtConsole.ScrollToEnd(); 
                     }
                 });
             }
@@ -232,13 +233,7 @@ namespace P3DWeatherEngineGUI
         }
 
         // --- WINDS ALOFT CACHE STRUCTURE ---
-        private struct WindsAloftCache
-        {
-            public int Dir10k; public int Spd10k; // 700 hPa
-            public int Dir24k; public int Spd24k; // 500 hPa
-            public int Dir36k; public int Spd36k; // 250 hPa
-        }
-        private WindsAloftCache _windsCache;
+        private AtmosphericProfile _windsCache = new AtmosphericProfile();
         private DateTime _lastWindsFetchTime = DateTime.MinValue;
         private bool _isFetchingWinds = false;
 
@@ -342,9 +337,31 @@ namespace P3DWeatherEngineGUI
             if (!_isSimConnected) ConnectToSim();
         }
 
+        // Add this timer variable right above your method
+        private System.Windows.Threading.DispatcherTimer _simPollTimer;
+
         private void ConnectToSim()
         {
-            if (_isSimConnected) return; 
+            if (_simPollTimer == null)
+            {
+                _simPollTimer = new System.Windows.Threading.DispatcherTimer();
+                _simPollTimer.Interval = TimeSpan.FromSeconds(3); // Try connecting every 3 seconds
+                _simPollTimer.Tick += (s, e) => { if (!_isSimConnected) ConnectToSim(); };
+                _simPollTimer.Start();
+            }
+
+            if (_isSimConnected) return;
+
+            // --- THE SILENT KILLER FIX ---
+            // Check if the simulator is actually running BEFORE trying to connect.
+            // If it's closed, SimConnect hangs for 2 seconds before failing, freezing the UI!
+            bool isSimRunning = System.Diagnostics.Process.GetProcessesByName("Prepar3D").Length > 0 || 
+                                System.Diagnostics.Process.GetProcessesByName("fsx").Length > 0;
+            
+            if (!isSimRunning) 
+            {
+                return; // Instantly skip without freezing!
+            }
 
             try
             {
@@ -353,13 +370,11 @@ namespace P3DWeatherEngineGUI
                 
                 Dispatcher.Invoke(() => {
                     lblStatus.Text = "Sim Connection: CONNECTED TO P3D";
-                    // Instantly establish the hazy horizon!
                     InjectBaselineAtmosphere();
                     lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightGreen);
                 });
                 
                 Log("Connection established. Enforcing Custom Weather Mode.");
-
                 simconnect.WeatherSetModeCustom();
 
                 simconnect.RegisterDataDefineStruct<PositionData>(DEFINITIONS.AircraftPosition);
@@ -370,8 +385,7 @@ namespace P3DWeatherEngineGUI
 
                 simconnect.OnRecvQuit += Simconnect_OnRecvQuit; 
                 simconnect.OnRecvSimobjectData += Simconnect_OnRecvSimobjectData;
-                simconnect.OnRecvException += Simconnect_OnRecvException; 
-
+                simconnect.OnRecvException += Simconnect_OnRecvException;
                 simconnect.RequestDataOnSimObject(DATA_REQUESTS.ContinuousPositionRequest, DEFINITIONS.AircraftPosition, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_PERIOD.SECOND, SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT, 0, 0, 0);
             }
             catch (Exception) 
@@ -391,8 +405,12 @@ namespace P3DWeatherEngineGUI
 
         private void Simconnect_OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
         {
-            Log("Simulator closed by user. Detaching engine...");
-            DisconnectSim();
+            // Force the disconnect sequence onto the main UI thread to prevent silent cross-thread crashes!
+            Dispatcher.Invoke(() => 
+            {
+                Log("Simulator closed by user. Detaching engine...");
+                DisconnectSim();
+            });
         }
 
         private async System.Threading.Tasks.Task CalculateEnrouteStationsAsync(System.Collections.Generic.List<Waypoint> route)
@@ -431,15 +449,21 @@ namespace P3DWeatherEngineGUI
         }
         private void DisconnectSim()
         {
-            if (simconnect != null)
+            // 1. Force EVERYTHING onto the main UI thread. 
+            // Disposing a COM object on a background thread will cause a silent deadlock!
+            Dispatcher.Invoke(() => 
             {
-                try { simconnect.Dispose(); } catch { }
-                simconnect = null;
-            }
-            
-            _isSimConnected = false;
-            
-            Dispatcher.Invoke(() => {
+                if (simconnect != null)
+                {
+                    try { simconnect.Dispose(); } catch { }
+                    simconnect = null;
+                }
+                
+                _isSimConnected = false;
+
+                // Stop the background weather injector so it doesn't hammer a dead COM object
+                try { _vatsimSyncTimer?.Stop(); } catch { }
+                
                 lblStatus.Text = "Sim Connection: Searching for Simulator...";
                 lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.LightCoral);
                 lblSimTime.Text = "Active Time: --:--Z";
@@ -479,16 +503,37 @@ namespace P3DWeatherEngineGUI
         {
             if (msg == WM_USER_SIMCONNECT && simconnect != null && _isSimConnected)
             {
-                try { simconnect.ReceiveMessage(); }
-                catch { DisconnectSim(); }
+                // 2. CRITICAL: Tell the Windows Message Pump we handled this!
+                // If we don't, WPF can start throttling or dropping the connection pipe.
+                handled = true; 
+                
+                try 
+                { 
+                    simconnect.ReceiveMessage(); 
+                }
+                catch 
+                { 
+                    // The pipe broke! (P3D crashed or was closed via Task Manager)
+                    DisconnectSim(); 
+                }
             }
             return IntPtr.Zero;
         }
-
         private void Simconnect_OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
         {
+            // Error 14 is SIMCONNECT_EXCEPTION_DATA_ERROR.
+            // This happens natively when injecting a perfect METAR for a modern airport that P3D's 2018 database doesn't recognize.
+            if (data.dwException == 14)
+            {
+                LogEngineEvent($"[SIMCONNECT] Station skipped (ICAO not found in P3D internal database). TrueSky will interpolate the gap.", LogLevel.Debug);
+                return;
+            }
+
             Log($"[SIMCONNECT EXCEPTION] Error Code: {data.dwException}");
         }
+
+        // 1. Add this variable right above the method to control the background search throttle
+        private DateTime _lastStationSearchTick = DateTime.MinValue;
 
         private async void Simconnect_OnRecvSimobjectData(SimConnect sender, SIMCONNECT_RECV_SIMOBJECT_DATA data)
         {
@@ -496,64 +541,56 @@ namespace P3DWeatherEngineGUI
             {
                 PositionData pos = (PositionData)data.dwData[0];
                 
-                // PERFORMANCE FIX: Only run the heavy UI and distance math ONCE per second, not 60 times a second!
-                if ((DateTime.UtcNow - _lastPositionTick).TotalMilliseconds < 1000) 
-                {
-                    return; // Skip this frame
-                }
+                if ((DateTime.UtcNow - _lastPositionTick).TotalMilliseconds < 1000) return; 
                 _lastPositionTick = DateTime.UtcNow;
 
                 lblSimTime.Text = $"Active Time: {DateTime.UtcNow:HH:mm}Z";
 
-                // --- FULLSCREEN MAP TAB TELEMETRY ---
-                // Updates the dedicated Windy-style map every 1 second.
-                // (Passing 0 for heading and GS to guarantee a clean compile until mapped).
                 UpdateFullMap(pos.Latitude, pos.Longitude, 0, 0, pos.Altitude);
+
+                double maxAlt = 40000.0;
+                double currentAlt = pos.Altitude;
+                if (currentAlt < 0) currentAlt = 0;
+                if (currentAlt > maxAlt) currentAlt = maxAlt;
                 
-                // --- TRIGGER ASYNC REAL-WORLD WINDS ALOFT FETCH (15 Min Interval) ---
+                if (altCanvas.ActualHeight > 0)
+                {
+                    double h = altCanvas.ActualHeight;
+                    double surfY = h * 0.125;
+                    double fl100Y = h * 0.375;
+                    double fl240Y = h * 0.625;
+                    double fl360Y = h * 0.875;
+                    double bottomPos = 0;
+
+                    if (currentAlt <= 10000) bottomPos = surfY + (currentAlt / 10000.0) * (fl100Y - surfY);
+                    else if (currentAlt <= 24000) bottomPos = fl100Y + ((currentAlt - 10000) / 14000.0) * (fl240Y - fl100Y);
+                    else if (currentAlt <= 36000) bottomPos = fl240Y + ((currentAlt - 24000) / 12000.0) * (fl360Y - fl240Y);
+                    else bottomPos = fl360Y + ((currentAlt - 36000) / 4000.0) * (h - fl360Y);
+
+                    System.Windows.Controls.Canvas.SetBottom(planeIcon, bottomPos - 7);
+                }
+
                 if ((DateTime.Now - _lastWindsFetchTime).TotalMinutes >= 15 && !_isFetchingWinds)
                 {
                     _ = FetchWindsAloftAsync(pos.Latitude, pos.Longitude);
                 }
-
-                // --- UPDATE DYNAMIC AIRCRAFT ICON ---
-                Dispatcher.Invoke(() => {
-                    double maxAlt = 40000.0;
-                    double currentAlt = pos.Altitude;
-                    if (currentAlt < 0) currentAlt = 0;
-                    if (currentAlt > maxAlt) currentAlt = maxAlt;
-                    
-                    if (altCanvas.ActualHeight > 0)
-                    {
-                        double bottomPos = (currentAlt / maxAlt) * (altCanvas.ActualHeight - 30); 
-                        System.Windows.Controls.Canvas.SetBottom(planeIcon, bottomPos);
-                    }
-                });
 
                 bool isTunedToAtis = Math.Abs(pos.Com1Frequency - ATIS_FREQUENCY) < 0.01;
                 if (isTunedToAtis)
                 {
                     if (!isAtisPlaying && !string.IsNullOrEmpty(currentIcao) && !_isFetchingAtis)
                     {
-                        _isFetchingAtis = true; // Lock to prevent rapid-fire API calls while awaiting
-                        
+                        _isFetchingAtis = true; 
                         try
                         {
-                            // 3. API Failure/Timeout - Fallback to original SkyNexus Generator
-                            string infoLetter = PhoneticAlphabet[DateTime.UtcNow.Hour % 26];
-                            // Fetch the latest weather for the ATIS
                             var wx = await FetchMetarDataAsync(currentIcao);
-                            // Pass it to the Smart ATIS. (Leaving TAF blank "" for now unless you have a TAF fetcher!)
                             string voiceScript = GenerateSmartAtis(currentIcao, wx.raw, ""); 
                             
                             isAtisPlaying = true; 
                             Log($"Broadcasting ATIS on {ATIS_FREQUENCY} MHz.");
                             speechEngine.SpeakAsync(voiceScript);
                         }
-                        finally
-                        {
-                            _isFetchingAtis = false; // Release lock
-                        }
+                        finally { _isFetchingAtis = false; }
                     }
                 }
                 else if (isAtisPlaying)
@@ -562,72 +599,140 @@ namespace P3DWeatherEngineGUI
                     isAtisPlaying = false;
                 }
 
-                var nearestStations = locator.GetNearestStations(pos.Latitude, pos.Longitude, 3);
-                if (nearestStations.Count > 0 && !isFetchingWeather)
+                if ((DateTime.UtcNow - _lastStationSearchTick).TotalSeconds >= 10 && !isFetchingWeather)
                 {
-                    WeatherStation primaryStation = nearestStations[0].Station;
-                    bool isNewStation = primaryStation.ICAO != currentIcao;
-                    bool isTimeForUpdate = (DateTime.Now - lastFetchTime).TotalMinutes >= IDLE_UPDATE_MINUTES;
+                    _lastStationSearchTick = DateTime.UtcNow;
 
-                    if (isNewStation || isTimeForUpdate)
+                    var nearestStations = await System.Threading.Tasks.Task.Run(async () => 
                     {
-                        currentIcao = primaryStation.ICAO ?? "GLOB";
-                        lastFetchTime = DateTime.Now;
-                        
-                        // --- CONDITIONS TAB MINI-MAP UPDATE ---
-                        // Restored original behavior: Only updates when reaching a new station
-                        UpdateMap(primaryStation.Latitude, primaryStation.Longitude, false);
-                        
-                        await UpdateInterpolatedWeatherAsync(nearestStations);
+                        if (_skyGridManager != null)
+                        {
+                            await _skyGridManager.UpdateStreamingWindowAsync(pos.Latitude, pos.Longitude, async (lat, lon, id) => {
+                                string baseMetar = await FetchGridMetarAsync(lat, lon, id);
+                                AtmosphericProfile aloft = await FetchWindsForCoordinateAsync(lat, lon);
+                                
+                                // --- THE BUG FIX: ENSURE STREAMED CELLS DON'T INJECT INTO "GLOB"! ---
+                                string p3dString = ParseAndSanitizeMetar(baseMetar, 0, aloft);
+                                return p3dString.Replace("GLOB", id);
+                            });
+                        }
+                        return locator.GetNearestStations(pos.Latitude, pos.Longitude, 3);
+                    });
+
+                    PushSkyGridToMap();
+
+                    if (nearestStations.Count > 0)
+                    {
+                        WeatherStation primaryStation = nearestStations[0].Station;
+                        string stationIdentifier = primaryStation.ICAO ?? "GLOB";
+                        bool isNewStation = stationIdentifier != currentIcao;
+                        bool isTimeForUpdate = (DateTime.Now - lastFetchTime).TotalMinutes >= IDLE_UPDATE_MINUTES;
+
+                        if (isNewStation || isTimeForUpdate)
+                        {
+                            currentIcao = stationIdentifier;
+                            lastFetchTime = DateTime.Now;
+                            
+                            UpdateMap(primaryStation.Latitude, primaryStation.Longitude, false);
+
+                            bool isAutoModeEnabled = chkAutoMode.IsChecked ?? false;
+                            if (isAutoModeEnabled)
+                            {
+                                await UpdateInterpolatedWeatherAsync(nearestStations);
+                            }
+                        }
                     }
                 }
             }
         }
         private string GenerateSmartAtis(string airportIdent, string rawMetar, string rawTaf)
         {
-            // 1. Assign Information Letter
-            string infoLetter = PhoneticAlphabet[DateTime.UtcNow.Hour % 26];
+            // 1. Assign Information Letter (Assuming PhoneticAlphabet is defined in your class)
+            string infoLetter = PhoneticAlphabet[DateTime.UtcNow.Hour % 26].ToUpper();
             
-            // 2. Decode Wind
-            string windSpoken = "Calm";
-            var windMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(\d{3}|VRB)(\d{2,3})KT");
+            // 2. Decode Wind (SayIntentions Style: "WIND 260 AT 8")
+            string windSpoken = "CALM";
+            var windMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(\d{3}|VRB)(\d{2,3})(?:G\d{2,3})?KT");
             if (windMatch.Success)
             {
-                string dir = windMatch.Groups[1].Value == "VRB" ? "Variable" : string.Join(" ", windMatch.Groups[1].Value.ToCharArray());
-                windSpoken = $"{dir} degrees at {windMatch.Groups[2].Value} knots";
+                if (windMatch.Groups[1].Value == "000" && windMatch.Groups[2].Value == "00") {
+                    windSpoken = "CALM";
+                } else {
+                    string dir = windMatch.Groups[1].Value;
+                    int spd = int.Parse(windMatch.Groups[2].Value); // int.Parse removes leading zeros (08 -> 8)
+                    windSpoken = $"{dir} AT {spd}";
+                }
             }
 
-            // 3. Decode Visibility
-            string visSpoken = "10 miles or greater";
-            var visMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"\b(\d+)SM\b");
-            if (visMatch.Success) visSpoken = $"{visMatch.Groups[1].Value} miles";
-
-            // 4. Decode Clouds using a Dictionary Mapper
-            var cloudMap = new Dictionary<string, string> { { "FEW", "Few clouds" }, { "SCT", "Scattered clouds" }, { "BKN", "Broken clouds" }, { "OVC", "Overcast" } };
-            var cloudLayers = new List<string>();
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(rawMetar, @"(FEW|SCT|BKN|OVC)(\d{3})"))
+            // 3 & 4. Decode Visibility & Clouds (With CAVOK Override)
+            string visCloudSpoken = "";
+            if (rawMetar.Contains("CAVOK"))
             {
-                int height = int.Parse(m.Groups[2].Value) * 100;
-                cloudLayers.Add($"{cloudMap[m.Groups[1].Value]} at {height} feet");
+                visCloudSpoken = "CAVOK.";
             }
-            string cloudsSpoken = cloudLayers.Count > 0 ? string.Join(". ", cloudLayers) : "Sky clear";
+            else
+            {
+                // Visibility Handling (Meters and Statute Miles)
+                string visSpoken = "";
+                var visMatchSM = System.Text.RegularExpressions.Regex.Match(rawMetar, @"\b(\d+)SM\b");
+                var visMatchM = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(?<=\s|^)(\d{4})(?=\s|NDV|$)");
+                
+                if (visMatchSM.Success) visSpoken = $"VISIBILITY {visMatchSM.Groups[1].Value}.";
+                else if (visMatchM.Success) visSpoken = $"VISIBILITY {int.Parse(visMatchM.Groups[1].Value)}."; // Drops leading zeros
 
-            // 5. Decode Temp/Dew/Alt
-            var tempMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(M?\d{2})/(M?\d{2})");
-            string tempSpoken = tempMatch.Success ? $"Temperature {tempMatch.Groups[1].Value.Replace("M", "Minus ")}. Dewpoint {tempMatch.Groups[2].Value.Replace("M", "Minus ")}." : "";
+                // Cloud Mapper
+                var cloudMap = new Dictionary<string, string> { { "FEW", "FEW" }, { "SCT", "SCATTERED" }, { "BKN", "BROKEN" }, { "OVC", "OVERCAST" } };
+                var cloudLayers = new List<string>();
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(rawMetar, @"(FEW|SCT|BKN|OVC)(\d{3})"))
+                {
+                    int height = int.Parse(m.Groups[2].Value) * 100;
+                    cloudLayers.Add($"{cloudMap[m.Groups[1].Value]} CLOUDS AT {height}");
+                }
+                string cloudsSpoken = cloudLayers.Count > 0 ? string.Join(", ", cloudLayers) + "." : "SKY CLEAR.";
+                
+                visCloudSpoken = $"{visSpoken} {cloudsSpoken}".Trim();
+            }
+
+            // 5. Decode Temp/Dew/Alt (SayIntentions Style: "TEMPERATURE 35, DEWPOINT 25.")
+            var tempMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(?:^|\s)(M?\d{2})/(M?\d{2})(?:\s|$)");
+            string tempSpoken = "";
+            if (tempMatch.Success) 
+            {
+                // int.Parse cleans up negative "M" values nicely (e.g. "M02" -> "-02" -> "-2")
+                int t = int.Parse(tempMatch.Groups[1].Value.Replace("M", "-"));
+                int d = int.Parse(tempMatch.Groups[2].Value.Replace("M", "-"));
+                tempSpoken = $"TEMPERATURE {t}, DEWPOINT {d}.";
+            }
             
-            var altMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"Q(\d{4})");
-            string altSpoken = altMatch.Success ? $"QNH {string.Join(" ", altMatch.Groups[1].Value.ToCharArray())}" : "";
+            // Pressure Handling (QNH vs Altimeter)
+            string altSpoken = "";
+            var qnhMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"Q(\d{4})");
+            var altMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"[A](\d{4})");
+            
+            if (qnhMatch.Success) altSpoken = $"QNH {int.Parse(qnhMatch.Groups[1].Value)}.";
+            else if (altMatch.Success) altSpoken = $"ALTIMETER {altMatch.Groups[1].Value.Insert(2, ".")}."; // e.g. 2992 -> 29.92
 
             // 6. Integrate Trend Analysis
             string trend = AnalyzeWeatherTrend(rawMetar, rawTaf);
-            string trendSpoken = trend == "Stable" ? "Weather expected to remain stable." : $"Weather trend: {trend}.";
+            string trendSpoken = trend == "Stable" ? "EXPECT STABLE CONDITIONS." : $"EXPECT {trend.ToUpper()}.";
 
             // 7. Assemble the final spoken script
-            return $"SkyNexus Information {infoLetter}. Time {DateTime.UtcNow:HHmm} Zulu. " +
-                   $"Wind {windSpoken}. Visibility {visSpoken}. {cloudsSpoken}. " +
-                   $"{tempSpoken} {altSpoken}. {trendSpoken} " +
-                   $"Advise controller on initial contact you have Information {infoLetter}.";
+            // Using a clean, contiguous string builder to prevent double-spaces
+            var finalAtisParts = new List<string> 
+            { 
+                $"{airportIdent.ToUpper()} AIRPORT, INFORMATION {infoLetter}.",
+                $"{DateTime.UtcNow:HHmm} ZULU.",
+                "ARRIVING AND DEPARTING RUNWAYS IN USE.",
+                $"WIND {windSpoken}.",
+                visCloudSpoken,
+                tempSpoken,
+                altSpoken,
+                trendSpoken,
+                $"ADVISE ON INITIAL CONTACT YOU HAVE INFORMATION {infoLetter}."
+            };
+
+            // Remove any empty strings (like if temp/dew was missing) and join with a space
+            return string.Join(" ", finalAtisParts.Where(s => !string.IsNullOrWhiteSpace(s)));
         }
 
         // --- NEW REAL-WORLD FORECAST FETCH METHOD ---
@@ -642,28 +747,52 @@ namespace P3DWeatherEngineGUI
                 if (response.IsSuccessStatusCode)
                 {
                     string json = await response.Content.ReadAsStringAsync();
-                    using (JsonDocument doc = JsonDocument.Parse(json))
+                    using (System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json))
                     {
                         var hourly = doc.RootElement.GetProperty("hourly");
                         int currentHour = DateTime.UtcNow.Hour; // Maps exactly to 0-23 array index
 
-                        _windsCache.Spd36k = (int)Math.Round(hourly.GetProperty("wind_speed_250hPa")[currentHour].GetDouble());
-                        _windsCache.Dir36k = (int)Math.Round(hourly.GetProperty("wind_direction_250hPa")[currentHour].GetDouble());
-                        
-                        _windsCache.Spd24k = (int)Math.Round(hourly.GetProperty("wind_speed_500hPa")[currentHour].GetDouble());
-                        _windsCache.Dir24k = (int)Math.Round(hourly.GetProperty("wind_direction_500hPa")[currentHour].GetDouble());
-                        
-                        _windsCache.Spd10k = (int)Math.Round(hourly.GetProperty("wind_speed_700hPa")[currentHour].GetDouble());
-                        _windsCache.Dir10k = (int)Math.Round(hourly.GetProperty("wind_direction_700hPa")[currentHour].GetDouble());
+                        // Create and assign new WindLayers directly into the Dictionary
+                        _windsCache.Layers[360] = new WindLayer 
+                        {
+                            Speed = (int)Math.Round(hourly.GetProperty("wind_speed_250hPa")[currentHour].GetDouble()),
+                            Direction = (int)Math.Round(hourly.GetProperty("wind_direction_250hPa")[currentHour].GetDouble())
+                        };
+                        _windsCache.Layers[240] = new WindLayer 
+                        {
+                            Speed = (int)Math.Round(hourly.GetProperty("wind_speed_500hPa")[currentHour].GetDouble()),
+                            Direction = (int)Math.Round(hourly.GetProperty("wind_direction_500hPa")[currentHour].GetDouble())
+                        };
+                        _windsCache.Layers[100] = new WindLayer 
+                        {
+                            Speed = (int)Math.Round(hourly.GetProperty("wind_speed_700hPa")[currentHour].GetDouble()),
+                            Direction = (int)Math.Round(hourly.GetProperty("wind_direction_700hPa")[currentHour].GetDouble())
+                        };
 
                         _lastWindsFetchTime = DateTime.Now;
-                        Log($"[NOAA GRIB] Real-World Winds Aloft updated. Core Jetstream (FL360): {_windsCache.Dir36k:D3} @ {_windsCache.Spd36k}kts");
+                        Log($"[NOAA GRIB] Real-World Winds Aloft updated. Core Jetstream (FL360): {_windsCache.Layers[360].Direction:D3} @ {_windsCache.Layers[360].Speed}kts");
 
+                        // Update the UI since we know the layers exist now
                         Dispatcher.Invoke(() => {
-                            lblWind36k.Text = $"{_windsCache.Dir36k:D3} @ {_windsCache.Spd36k} kts";
-                            lblWind24k.Text = $"{_windsCache.Dir24k:D3} @ {_windsCache.Spd24k} kts";
-                            lblWind10k.Text = $"{_windsCache.Dir10k:D3} @ {_windsCache.Spd10k} kts";
+                            lblWind36k.Text = $"{_windsCache.Layers[360].Direction:D3} @ {_windsCache.Layers[360].Speed} kts";
+                            lblWind24k.Text = $"{_windsCache.Layers[240].Direction:D3} @ {_windsCache.Layers[240].Speed} kts";
+                            lblWind10k.Text = $"{_windsCache.Layers[100].Direction:D3} @ {_windsCache.Layers[100].Speed} kts";
                         });
+
+                        // --- THE FIX: INJECT CONTINUOUS GLOBAL WINDS ALOFT ---
+                        if (simconnect != null)
+                        {
+                            string globWinds = $"GLOB {DateTime.UtcNow:ddHHmm}Z 00000KT " +
+                                               $"{_windsCache.Layers[100].Direction:D3}{_windsCache.Layers[100].Speed:D2}KT&A3048 " +
+                                               $"{_windsCache.Layers[240].Direction:D3}{_windsCache.Layers[240].Speed:D2}KT&A7315 " +
+                                               $"{_windsCache.Layers[360].Direction:D3}{_windsCache.Layers[360].Speed:D2}KT&A10973 " +
+                                               "40SM CLR 15/10 A2992";
+
+                            Dispatcher.Invoke(() => {
+                                try { simconnect.WeatherSetObservation(0, globWinds); } catch { }
+                            });
+                            LogEngineEvent($"[ENGINE] Global background winds aloft synchronized with aircraft position.", LogLevel.Debug);
+                        }
                     }
                 }
                 else
@@ -703,7 +832,7 @@ namespace P3DWeatherEngineGUI
             var lons = new System.Collections.Generic.List<double>();
             
             // INCREASED DENSITY: Divided latitude by 4 and longitude by 6
-            for (double lat = minLat; lat <= maxLat; lat += (maxLat - minLat) / 5)
+            for (double lat = minLat; lat <= maxLat; lat += (maxLat - minLat) / 9)
             {
                 for (double lon = minLon; lon <= maxLon; lon += (maxLon - minLon) / 9)
                 {
@@ -965,7 +1094,6 @@ namespace P3DWeatherEngineGUI
         private void RunTurbulencePrediction(int surfaceWindKts, string rawMetar)
         {
             LogEngineEvent("[ENGINE] Initiating Turbulence Prediction algorithms...", LogLevel.Debug);
-            
             int score = 0;
             string sources = "";
 
@@ -989,11 +1117,15 @@ namespace P3DWeatherEngineGUI
             bool isJetStreamEnabled = false;
             Dispatcher.Invoke(() => isJetStreamEnabled = chkJetStream.IsChecked ?? false);
 
-            if (isJetStreamEnabled && _windsCache.Spd36k > 80 && Math.Abs(_windsCache.Spd36k - _windsCache.Spd24k) > 40)
+            // SAFELY EXTRACT FROM THE NEW PHYSICS DICTIONARY
+            int spd36k = _windsCache.Layers.ContainsKey(360) ? _windsCache.Layers[360].Speed : 0;
+            int spd24k = _windsCache.Layers.ContainsKey(240) ? _windsCache.Layers[240].Speed : 0;
+
+            if (isJetStreamEnabled && spd36k > 80 && Math.Abs(spd36k - spd24k) > 40)
             {
                 score += 20;
                 sources += "CAT / Jet Stream, ";
-                LogEngineEvent($"[TURB] Massive upper-level speed gradient ({_windsCache.Spd36k}kt vs {_windsCache.Spd24k}kt) detected (+20).", LogLevel.Debug);
+                LogEngineEvent($"[TURB] Massive upper-level speed gradient ({spd36k}kt vs {spd24k}kt) detected (+20).", LogLevel.Debug);
             }
 
             // Clean up string formatting
@@ -1053,15 +1185,47 @@ namespace P3DWeatherEngineGUI
             txtCustomMetar.Text = "";
         }
 
-        private void BtnForceUpdate_Click(object sender, RoutedEventArgs e)
+        private async void BtnForceUpdate_Click(object sender, RoutedEventArgs e)
         {
             // 1. Write to the log
-            LogEngineEvent("Manual live weather refresh triggered.", LogLevel.Normal);
-            
-            // 2. Update the UI
-            lblLastUpdate.Text = DateTime.UtcNow.ToString("HH:mm") + "Z";
-            lblStatus.Text = "Sim Connection: Weather Refreshed Successfully.";
-            lblStatus.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981")); // Turns green
+            LogEngineEvent("[NORMAL] Manual live weather refresh triggered.", LogLevel.Normal);
+
+            // Temporarily update the UI to show we are working
+            lblStatus.Text = "Sim Connection: Fetching latest data...";
+            lblStatus.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#F59E0B")); // Turns amber/yellow
+
+            // Grab the ICAO currently shown on the Conditions page
+            string currentIcao = lblStationName.Text.Trim().ToUpper();
+
+            if (!string.IsNullOrEmpty(currentIcao) && currentIcao != "---")
+            {
+                var station = locator.GetStationByIcao(currentIcao);
+                if (station != null)
+                {
+                    try
+                    {
+                        // Fire off the actual weather engine injection pipeline!
+                        var list = new System.Collections.Generic.List<(WeatherStation Station, double Distance)> { (station, 0.0) };
+                        await UpdateInterpolatedWeatherAsync(list);
+
+                        // 2. Update the UI on success
+                        lblLastUpdate.Text = DateTime.UtcNow.ToString("HH:mm") + "Z";
+                        lblStatus.Text = "Sim Connection: Weather Refreshed Successfully.";
+                        lblStatus.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981")); // Turns green
+                    }
+                    catch (Exception ex)
+                    {
+                        LogEngineEvent($"[ERROR] Manual refresh failed: {ex.Message}", LogLevel.Normal);
+                        lblStatus.Text = "Sim Connection: Injection Failed.";
+                        lblStatus.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EF4444")); // Turns red
+                    }
+                }
+                else
+                {
+                    lblStatus.Text = "Sim Connection: Station Not Found.";
+                    lblStatus.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EF4444")); // Turns red
+                }
+            }
         }
 
         private void BtnToggleView_Click(object sender, RoutedEventArgs e)
@@ -1081,8 +1245,40 @@ namespace P3DWeatherEngineGUI
         mapBrowser.Visibility = Visibility.Visible;
         lblViewTitle.Text = "Live Tracking";
     }
-}
+}       
 
+        private void FullMapBrowser_WebMessageReceived(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            string message = e.TryGetWebMessageAsString();
+            if (string.IsNullOrEmpty(message)) return;
+
+            if (message.StartsWith("INJECT_METAR|"))
+            {
+                // Parse the ICAO, Latitude, and Longitude sent from the JavaScript map
+                string[] parts = message.Split('|');
+                if (parts.Length < 4) return;
+
+                string icao = parts[1];
+                double lat = double.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
+                double lon = double.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture);
+
+                LogEngineEvent($"[MAP] Manual injection requested for {icao}", LogLevel.Normal);
+                
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    // Use the existing GetNearestStations method with the exact coordinates!
+                    var nearestList = locator.GetNearestStations(lat, lon, 1);
+                    
+                    if (nearestList != null && nearestList.Count > 0)
+                    {
+                        var station = nearestList[0].Station;
+                        // Use 0.0 to explicitly tell C# this is a double, satisfying the tuple type
+                        var list = new System.Collections.Generic.List<(WeatherStation Station, double Distance)> { (station, 0.0) };
+                        await UpdateInterpolatedWeatherAsync(list);
+                    }
+                });
+            }
+        }
         private async Task UpdateInterpolatedWeatherAsync(List<(WeatherStation Station, double Distance)> stations)
         {
             isFetchingWeather = true; 
@@ -1110,30 +1306,21 @@ namespace P3DWeatherEngineGUI
                                 string metar = rawMetar.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
                                 if (item.Station.ICAO == primaryStation.ICAO) baseMetar = metar;
 
-                                var tempMatch = Regex.Match(metar, @"\s(M?\d{2})/(M?\d{2})");
-                                var altMatch = Regex.Match(metar, @"[AQ](\d{4})");
+                                var tempMatch = System.Text.RegularExpressions.Regex.Match(metar, @"\s(M?\d{2})/(M?\d{2})");
+                                var altMatch = System.Text.RegularExpressions.Regex.Match(metar, @"A(\d{4})|Q(\d{4})");
 
                                 if (tempMatch.Success && altMatch.Success)
                                 {
-                                    string tStr = tempMatch.Groups[1].Value;
-                                    double temp = tStr.StartsWith("M") ? -int.Parse(tStr.Substring(1)) : int.Parse(tStr);
-                                    string dStr = tempMatch.Groups[2].Value;
-                                    double dew = dStr.StartsWith("M") ? -int.Parse(dStr.Substring(1)) : int.Parse(dStr);
-                                    
-                                    double alt;
-                                    if (altMatch.Value.StartsWith("Q")) {
-                                        alt = double.Parse(altMatch.Groups[1].Value) * 0.029530; 
-                                    } else {
-                                        alt = double.Parse(altMatch.Groups[1].Value) / 100.0; 
-                                    }
+                                    double temp = double.Parse(tempMatch.Groups[1].Value.Replace("M", "-"));
+                                    double dew = double.Parse(tempMatch.Groups[2].Value.Replace("M", "-"));
+                                    double alt = altMatch.Groups[1].Success ? double.Parse(altMatch.Groups[1].Value) / 100.0 : double.Parse(altMatch.Groups[2].Value) * 0.02953;
 
-                                    double offset = (item.Station.Elevation / 100.0) * 0.198; 
-                                    temp += offset; dew += offset;
-
-                                    double dist = item.Distance < 0.1 ? 0.1 : item.Distance; 
-                                    double weight = 1.0 / (dist * dist);
-                                    interpTemp += temp * weight; interpDew += dew * weight; interpAlt += alt * weight;
-                                    totalWeight += weight; validReadings++;
+                                    double weight = 1.0 / (item.Distance + 0.1); 
+                                    totalWeight += weight;
+                                    interpTemp += temp * weight;
+                                    interpDew += dew * weight;
+                                    interpAlt += alt * weight;
+                                    validReadings++;
                                 }
                             }
                         }
@@ -1143,128 +1330,117 @@ namespace P3DWeatherEngineGUI
 
                 if (validReadings > 0 && !string.IsNullOrEmpty(baseMetar))
                 {
+                    interpTemp /= totalWeight;
+                    interpDew /= totalWeight;
+                    interpAlt /= totalWeight;
+
                     Log($"Data retrieved. Executing interpolation across {validReadings} stations...");
-                    interpTemp /= totalWeight; interpDew /= totalWeight; interpAlt /= totalWeight;
+                    
+                    int uiTemp = (int)Math.Round(interpTemp);
+                    int uiDew = (int)Math.Round(interpDew);
+                    double inHg = interpAlt;
+                    double hPa = inHg * 33.8639;
 
-                    atisRawTemp = (int)Math.Round(interpTemp);
-                    atisRawDew = (int)Math.Round(interpDew);
-                    
-                    // --- IATA AND NAME EXTRACTION ---
-                    string? iata = string.IsNullOrWhiteSpace(primaryStation.IATA) ? null : primaryStation.IATA.Trim();
-                    string? name = string.IsNullOrWhiteSpace(primaryStation.Name) ? null : primaryStation.Name.Trim();
-                    
-                    lblIata.Text = string.IsNullOrEmpty(iata) ? "---" : iata;
-                    lblAirportName.Text = string.IsNullOrEmpty(name) ? "Airport Data Available" : name;
-                    atisAirportName = string.IsNullOrEmpty(name) ? (primaryStation.ICAO ?? "Airport") : name;
-                    
-                    atisRawAltStr = ((int)Math.Round(interpAlt * 100)).ToString("D4");
-
-                    var windMatch = Regex.Match(baseMetar, @"(\d{3}|VRB)(\d{2,3})(?:G\d{2,3})?KT");
+                    int uiWindSpd = 0;
+                    double uiWindDir = 0;
+                    var windMatch = System.Text.RegularExpressions.Regex.Match(baseMetar, @"(\d{3}|VRB)(\d{2,3})(?:G\d{2,3})?KT");
                     if (windMatch.Success)
                     {
                         string dir = windMatch.Groups[1].Value;
-                        surfWindSpd = int.Parse(windMatch.Groups[2].Value);
-                        surfWindDir = (dir == "VRB" || dir == "000") ? 0 : double.Parse(dir);
-
-                        if (dir == "000" && surfWindSpd == 0) atisWindString = "Wind calm";
-                        else if (dir == "VRB") atisWindString = $"Wind variable at {surfWindSpd}";
-                        else {
-                            string dirSpelled = string.Join(" ", dir.ToCharArray()).Replace("9", "niner");
-                            atisWindString = $"Wind {dirSpelled} at {surfWindSpd}";
-                        }
+                        uiWindSpd = int.Parse(windMatch.Groups[2].Value);
+                        uiWindDir = (dir == "VRB" || dir == "000") ? 0 : double.Parse(dir);
                     }
 
-                    if (baseMetar.Contains("CAVOK") || baseMetar.Contains("SKC") || baseMetar.Contains("CLR")) { atisCloudString = "clear"; }
-                    else 
-                    {
-                        List<string> clouds = new List<string>();
-                        bool hasCeiling = false;
-                        foreach (Match m in Regex.Matches(baseMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})"))
-                        {
-                            string typeCloud = m.Groups[1].Value;
-                            int h = int.Parse(m.Groups[2].Value) * 100;
-                            if (typeCloud == "FEW") clouds.Add($"few clouds at {h}");
-                            else if (typeCloud == "SCT") clouds.Add($"{h} scattered");
-                            else if (typeCloud == "BKN" && !hasCeiling) { clouds.Add($"ceiling {h} broken"); hasCeiling = true; }
-                            else if (typeCloud == "BKN") clouds.Add($"{h} broken");
-                            else if (typeCloud == "OVC" && !hasCeiling) { clouds.Add($"ceiling {h} overcast"); hasCeiling = true; }
-                            else if (typeCloud == "OVC") clouds.Add($"{h} overcast");
-                        }
-                        atisCloudString = clouds.Count > 0 ? string.Join(" ", clouds) : "clear";
-                    }
-
-                    lblStationName.Text = primaryStation.ICAO;
-                    lblLastUpdate.Text = $"{DateTime.UtcNow:HH:mm}Z";
-                    lblCoords.Text = $"{primaryStation.Latitude:F3}° / {primaryStation.Longitude:F3}°";
-                    lblElevation.Text = $"{primaryStation.Elevation} ft";
-                    
-                    lblTemp.Text = $"{atisRawTemp}°C";
-                    lblTempImp.Text = $"{Math.Round(atisRawTemp * 9.0 / 5.0 + 32)}°F";
-
-                    lblDew.Text = $"{atisRawDew}°C";
-                    lblDewImp.Text = $"{Math.Round(atisRawDew * 9.0 / 5.0 + 32)}°F";
-
-                    lblWind.Text = $"{(int)surfWindDir:D3} @ {surfWindSpd} kts";
-                    lblWindImp.Text = $"{Math.Round(surfWindSpd * 1.15078)} mph";
-                    
-                    var visMatch = Regex.Match(baseMetar, @"\s(\d+)SM");
-                    if (visMatch.Success) atisRawVisibility = int.Parse(visMatch.Groups[1].Value);
+                    int uiVis = 10;
+                    var visMatch = System.Text.RegularExpressions.Regex.Match(baseMetar, @"\s(\d+)SM");
+                    if (visMatch.Success) uiVis = int.Parse(visMatch.Groups[1].Value);
                     else {
-                        var meterMatch = Regex.Match(baseMetar, @"\s(\d{4})\s");
+                        var meterMatch = System.Text.RegularExpressions.Regex.Match(baseMetar, @"\s(\d{4})\s");
                         if (meterMatch.Success && int.TryParse(meterMatch.Groups[1].Value, out int m)) {
-                            if (m >= 9999) atisRawVisibility = 10;
-                            else atisRawVisibility = (int)Math.Round(m / 1609.34);
+                            uiVis = m >= 9999 ? 10 : (int)Math.Round(m / 1609.34);
                         }
-                        else atisRawVisibility = 10;
                     }
 
-                    // --- NEW DETERMINISTIC VISIBILITY MODEL ---
-                    if (atisRawVisibility >= 10)
+                    string cloudString = "CLEAR";
+                    if (!baseMetar.Contains("CAVOK") && !baseMetar.Contains("SKC") && !baseMetar.Contains("CLR")) 
                     {
-                        // Calculate relative humidity profile using temp/dew spread
-                        int spread = atisRawTemp - atisRawDew;
-                        
-                        if (spread >= 15) atisRawVisibility = 40;      // Very dry desert/arctic air = crystal clear
-                        else if (spread >= 10) atisRawVisibility = 30; // Dry air = excellent visibility
-                        else if (spread >= 5) atisRawVisibility = 20;  // Moderate humidity = slight haze
-                        else atisRawVisibility = 12;                   // High humidity (close to saturation) = heavy haze
-
-                        Log($"[3D ENGINE] Unrestricted visibility graded by Temp/Dew spread ({spread}°C). Ceiling set to: {atisRawVisibility} SM.");
+                        var clouds = new System.Collections.Generic.List<string>();
+                        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(baseMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})"))
+                        {
+                            clouds.Add($"{m.Groups[1].Value} {int.Parse(m.Groups[2].Value) * 100}");
+                        }
+                        if (clouds.Count > 0) cloudString = string.Join(" / ", clouds);
                     }
 
-                    lblVis.Text = $"{Math.Round(atisRawVisibility * 1.60934, 1)} km";
-                    lblVisImp.Text = $"{atisRawVisibility} SM";
+                    string iata = string.IsNullOrWhiteSpace(primaryStation.IATA) ? null : primaryStation.IATA.Trim();
+                    string name = string.IsNullOrWhiteSpace(primaryStation.Name) ? null : primaryStation.Name.Trim();
 
-                    double inHg = interpAlt;
-                    double hPa = inHg * 33.8639;
-                    lblPressure.Text = $"{(int)Math.Round(hPa)} hPa";
-                    lblPressureImp.Text = $"{inHg:F2} inHg";
-                    
-                    lblConditions.Text = atisCloudString.ToUpper();
-                    txtMetar.Text = baseMetar;
+                    Dispatcher.Invoke(() => 
+                    {
+                        lblIata.Text = string.IsNullOrEmpty(iata) ? "---" : iata;
+                        lblAirportName.Text = string.IsNullOrEmpty(name) ? "Airport Data Available" : name;
+                        lblStationName.Text = primaryStation.ICAO ?? "GLOB";
+                        
+                        lblLastUpdate.Text = $"{DateTime.UtcNow:HH:mm}Z";
+                        lblCoords.Text = $"{primaryStation.Latitude:F3}° / {primaryStation.Longitude:F3}°";
+                        lblElevation.Text = $"{primaryStation.Elevation} ft";
+
+                        lblTemp.Text = $"{uiTemp}°C";
+                        lblTempImp.Text = $"{Math.Round(uiTemp * 9.0 / 5.0 + 32)}°F";
+
+                        lblDew.Text = $"{uiDew}°C";
+                        lblDewImp.Text = $"{Math.Round(uiDew * 9.0 / 5.0 + 32)}°F";
+
+                        lblWind.Text = $"{(int)uiWindDir:D3} @ {uiWindSpd} kts";
+                        lblWindImp.Text = $"{Math.Round(uiWindSpd * 1.15078)} mph";
+
+                        lblVis.Text = $"{Math.Round(uiVis * 1.60934, 1)} km";
+                        lblVisImp.Text = $"{uiVis} SM";
+
+                        lblPressure.Text = $"{(int)Math.Round(hPa)} hPa";
+                        lblPressureImp.Text = $"{inHg:F2} inHg";
+
+                        lblConditions.Text = cloudString;
+                        txtMetar.Text = baseMetar;
+                    });
 
                     try {
                         string tafUrl = $"https://aviationweather.gov/api/data/taf?ids={primaryStation.ICAO}&format=raw";
                         HttpResponseMessage tafResp = await client.GetAsync(tafUrl);
                         if (tafResp.IsSuccessStatusCode) {
-                            txtTaf.Text = await tafResp.Content.ReadAsStringAsync();
-                        } else { txtTaf.Text = "No TAF available for this station."; }
-                    } catch { txtTaf.Text = "Failed to fetch TAF."; }
+                            string taf = await tafResp.Content.ReadAsStringAsync();
+                            Dispatcher.Invoke(() => txtTaf.Text = taf);
+                        }
+                    } catch { }
 
-                    Log($"Engaging 3-Phase Parser on raw string...");
-                    string safeP3DMetar = ParseAndSanitizeMetar(baseMetar, primaryStation.Elevation);
-                    
-                    // CRITICAL FIX: Convert the parser's global output into a LOCAL weather cylinder!
-                    if (primaryStation.ICAO != null)
+                    AtmosphericProfile localWinds = null;
+                    if (primaryStation.Latitude != 0 && primaryStation.Longitude != 0)
                     {
-                        safeP3DMetar = safeP3DMetar.Replace("GLOB", primaryStation.ICAO);
+                        localWinds = await FetchWindsForCoordinateAsync(primaryStation.Latitude, primaryStation.Longitude);
                     }
-                    RunTurbulencePrediction(surfWindSpd, baseMetar);
+
+                    string safeP3DMetar = ParseAndSanitizeMetar(baseMetar, primaryStation.Elevation, localWinds);
+                    
+                    if (!string.IsNullOrEmpty(primaryStation.ICAO) && primaryStation.ICAO.Length == 4)
+                    {
+                        string injectionIcao = primaryStation.ICAO;
+                        
+                        // --- THE COMPILER FIX: Call the Async version and await it! ---
+                        await EnsureWeatherStationExistsAsync(injectionIcao, primaryStation.Latitude, primaryStation.Longitude, primaryStation.Elevation);
+                        
+                        safeP3DMetar = safeP3DMetar.Replace("GLOB", injectionIcao);
+                    }
+                    
+                    RunTurbulencePrediction(uiWindSpd, baseMetar);
                     
                     if (simconnect != null) 
                     {
                         Log($"[INJECT] -> {safeP3DMetar}");
-                        simconnect.WeatherSetObservation(0, safeP3DMetar);
+                        Dispatcher.Invoke(() => 
+                        {
+                            try { simconnect.WeatherSetObservation(0, safeP3DMetar); }
+                            catch (Exception ex) { Log($"[SIMCONNECT] Injection failed: {ex.Message}"); }
+                        });
                     }
                 }
             }
@@ -1273,162 +1449,218 @@ namespace P3DWeatherEngineGUI
                 isFetchingWeather = false; 
             }
         }
-
         // =========================================================================================
         // 3D HYBRID PARSING ALGORITHM (Sanitizer -> Lexer -> Volumetric Simplifier)
         // =========================================================================================
-        private string ParseAndSanitizeMetar(string rawMetar, double stationElevation)
+
+        private async Task<AtmosphericProfile> FetchWindsForCoordinateAsync(double lat, double lon)
+        {
+            var profile = new AtmosphericProfile();
+            string url = $"https://api.open-meteo.com/v1/forecast?latitude={lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}&longitude={lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}&hourly=wind_speed_250hPa,wind_direction_250hPa,wind_speed_500hPa,wind_direction_500hPa,wind_speed_700hPa,wind_direction_700hPa&wind_speed_unit=kn&forecast_days=1";
+        
+            try
+            {
+                 HttpResponseMessage response = await client.GetAsync(url);
+                 if (response.IsSuccessStatusCode)
+                 {
+                    string json = await response.Content.ReadAsStringAsync();
+                    using (System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json))
+                    {
+                        var hourly = doc.RootElement.GetProperty("hourly");
+                        int currentHour = DateTime.UtcNow.Hour;
+                        
+                        // Parse the JSON and map directly to the flight levels
+                        profile.Layers[360] = new WindLayer 
+                        {
+                            Speed = (int)Math.Round(hourly.GetProperty("wind_speed_250hPa")[currentHour].GetDouble()),
+                            Direction = (int)Math.Round(hourly.GetProperty("wind_direction_250hPa")[currentHour].GetDouble())
+                        };
+                        profile.Layers[240] = new WindLayer 
+                        {
+                            Speed = (int)Math.Round(hourly.GetProperty("wind_speed_500hPa")[currentHour].GetDouble()),
+                            Direction = (int)Math.Round(hourly.GetProperty("wind_direction_500hPa")[currentHour].GetDouble())
+                        };
+                        profile.Layers[100] = new WindLayer 
+                        {
+                            Speed = (int)Math.Round(hourly.GetProperty("wind_speed_700hPa")[currentHour].GetDouble()),
+                            Direction = (int)Math.Round(hourly.GetProperty("wind_direction_700hPa")[currentHour].GetDouble())
+                        };
+                    }
+                 }
+            }
+            catch { }
+            
+            return profile;
+        }
+
+        private async Task<string> FetchGridMetarAsync(double lat, double lon, string cellId)
+        {
+            // THE BUG FIX: Added &timezone=GMT to satisfy Open-Meteo's strict parameter requirements
+            string url = $"https://api.open-meteo.com/v1/forecast?latitude={lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}&longitude={lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,cloud_cover,weather_code&wind_speed_unit=kn&timezone=GMT";
+            try
+            {
+                 HttpResponseMessage response = await client.GetAsync(url);
+                 if (response.IsSuccessStatusCode)
+                 {
+                     string json = await response.Content.ReadAsStringAsync();
+                     using (System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json))
+                     {
+                         var current = doc.RootElement.GetProperty("current");
+                         double t = current.GetProperty("temperature_2m").GetDouble();
+                         double rh = current.GetProperty("relative_humidity_2m").GetDouble();
+                         double p = current.GetProperty("surface_pressure").GetDouble();
+                         int ws = (int)Math.Round(current.GetProperty("wind_speed_10m").GetDouble());
+                         int wd = (int)Math.Round(current.GetProperty("wind_direction_10m").GetDouble());
+                         int clouds = current.GetProperty("cloud_cover").GetInt32();
+                         int wxCode = current.GetProperty("weather_code").GetInt32();
+                         
+                         // Calculate true dewpoint and convert hPa to inches of mercury
+                         double dew = t - ((100.0 - rh) / 5.0);
+                         double inHg = p * 0.02953;
+
+                         string tempStr = t < 0 ? $"M{Math.Abs((int)t):D2}" : $"{(int)t:D2}";
+                         string dewStr = dew < 0 ? $"M{Math.Abs((int)dew):D2}" : $"{(int)dew:D2}";
+                         string windStr = $"{wd:D3}{ws:D2}KT";
+                         string altStr = $"A{(int)(inHg * 100):D4}";
+                         
+                         // Map WMO Weather Codes to Aviation Precipitation
+                         string wxStr = "";
+                         if (wxCode >= 51 && wxCode <= 55) wxStr = "-RA ";
+                         else if (wxCode >= 61 && wxCode <= 65) wxStr = "RA ";
+                         else if (wxCode >= 71 && wxCode <= 77) wxStr = "SN ";
+                         else if (wxCode >= 95 && wxCode <= 99) wxStr = "TSRA ";
+
+                         // Dynamically build the cloud layers
+                         string cloudStr = "CLR";
+                         if (clouds > 85) cloudStr = "OVC040";
+                         else if (clouds > 60) cloudStr = "BKN040";
+                         else if (clouds > 25) cloudStr = "SCT040";
+                         else if (clouds > 10) cloudStr = "FEW040";
+
+                         return $"{cellId} {DateTime.UtcNow:ddHHmm}Z {windStr} 10SM {wxStr}{cloudStr} {tempStr}/{dewStr} {altStr}";
+                     }
+                 }
+                 else
+                 {
+                     // Explicit logging for future API debugs
+                     LogEngineEvent($"[SKYGRID API ERROR] Open-Meteo rejected request for {cellId}. Status: {response.StatusCode}", LogLevel.Debug);
+                 }
+            } 
+            catch (Exception ex) 
+            {
+                 LogEngineEvent($"[SKYGRID API ERROR] Failed to parse data for {cellId}: {ex.Message}", LogLevel.Debug);
+            }
+            
+            return $"{cellId} {DateTime.UtcNow:ddHHmm}Z 00000KT 10SM CLR 15/10 A2992"; 
+        }
+
+        private async Task EnsureWeatherStationExistsAsync(string icao, double lat, double lon, double elevation = 0)
+        {
+            if (simconnect == null) return;
+            try 
+            {
+                var method = simconnect.GetType().GetMethods().FirstOrDefault(m => m.Name == "WeatherCreateStation");
+                if (method != null)
+                {
+                    var pInfos = method.GetParameters();
+                    object[] args = new object[pInfos.Length];
+                    int floatIndex = 0, stringIndex = 0;
+                    
+                    double elevationMeters = elevation / 3.28084;
+
+                    for (int i = 0; i < pInfos.Length; i++)
+                    {
+                        var pType = pInfos[i].ParameterType;
+                        if (pType == typeof(System.Enum)) args[i] = System.DayOfWeek.Monday;
+                        else if (pType == typeof(uint) || pType == typeof(int)) args[i] = Convert.ChangeType(0, pType);
+                        else if (pType == typeof(string)) { args[i] = (stringIndex == 0) ? icao : $"Dynamic_{icao}"; stringIndex++; }
+                        else if (pType == typeof(float)) 
+                        { 
+                            args[i] = floatIndex == 0 ? (float)lat : floatIndex == 1 ? (float)lon : floatIndex == 2 ? (float)elevationMeters : 0f; 
+                            floatIndex++; 
+                        }
+                        else if (pType == typeof(double)) 
+                        { 
+                            args[i] = floatIndex == 0 ? lat : floatIndex == 1 ? lon : floatIndex == 2 ? elevationMeters : 0.0; 
+                            floatIndex++; 
+                        }
+                        else args[i] = pType.IsValueType ? Activator.CreateInstance(pType) : null;
+                    }
+                    
+                    Dispatcher.Invoke(() => method.Invoke(simconnect, args));
+                    
+                    // --- CRITICAL FIX: THE RACE CONDITION ---
+                    // Give Prepar3D time to build the station before we hammer it with weather!
+                    await Task.Delay(500);
+                }
+            } 
+            catch { }
+        }
+        private string ParseAndSanitizeMetar(string rawMetar, double stationElevation, AtmosphericProfile? winds = null)
         {
             if (string.IsNullOrWhiteSpace(rawMetar)) return "";
+            var decoder = new MetarDecoder();
             
-            // Obliterate rogue newlines
-            rawMetar = rawMetar.Replace("\r", " ").Replace("\n", " ").Replace("=", "").Replace(";", "");
-            rawMetar = System.Text.RegularExpressions.Regex.Replace(rawMetar, @"\s+", " ").Trim();
-
-            // 1. TIMESTAMP (P3D requirement)
-            string timestamp = DateTime.UtcNow.ToString("ddHHmm") + "Z"; 
-            var timeMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"\b(\d{6}Z)\b");
-            if (timeMatch.Success) timestamp = timeMatch.Groups[1].Value;
-
-            // 2. WIND (P3D requirement)
-            string wind = "00000KT";
-            var windMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"\b(\d{3}|VRB)(\d{2,3})(?:G\d{2,3})?KT\b");
-            if (windMatch.Success) wind = windMatch.Value;
+            var decodeResult = decoder.Decode(rawMetar, stationElevation, winds, _windsCache);
+            var model = decodeResult.Model;
+            var quality = decodeResult.Quality;
 
             Dispatcher.Invoke(() => {
-                var wMatch = System.Text.RegularExpressions.Regex.Match(wind, @"^(\d{3}|VRB)(\d{2,3})");
+                var wMatch = System.Text.RegularExpressions.Regex.Match(model.WindToken, @"^(\d{3}|VRB)(\d{2,3})");
                 if (wMatch.Success) {
                     string dirStr = wMatch.Groups[1].Value;
                     lblWindSurf_Aloft.Text = $"{(dirStr == "VRB" ? "VRB" : int.Parse(dirStr).ToString("D3"))} @ {int.Parse(wMatch.Groups[2].Value)} kts";
                 }
             });
 
-            // 3. TEMP & DEWPOINT
-            int t = 15, d = 10;
-            string tempStr = "15/10";
-            var tempMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(?:^|\s)(M?\d{2})/(M?\d{2})(?:\s|$)");
-            if (tempMatch.Success) {
-                tempStr = tempMatch.Groups[1].Value + "/" + tempMatch.Groups[2].Value;
-                t = tempMatch.Groups[1].Value.StartsWith("M") ? -int.Parse(tempMatch.Groups[1].Value.Substring(1)) : int.Parse(tempMatch.Groups[1].Value);
-                d = tempMatch.Groups[2].Value.StartsWith("M") ? -int.Parse(tempMatch.Groups[2].Value.Substring(1)) : int.Parse(tempMatch.Groups[2].Value);
-            }
-
-            // 4. ALTIMETER
-            string altimeter = "A2992";
-            var altMatch = System.Text.RegularExpressions.Regex.Match(rawMetar, @"\b([AQ])(\d{4})\b");
-            if (altMatch.Success) {
-                if (altMatch.Groups[1].Value == "Q") {
-                    int p3dAlt = (int)Math.Round(double.Parse(altMatch.Groups[2].Value) * 0.029530 * 100);
-                    altimeter = $"A{p3dAlt:D4}";
-                } else altimeter = altMatch.Value;
-            }
-
-            // 5. VISIBILITY
-            int finalVisSM = 10;
-            var visMatchSM = System.Text.RegularExpressions.Regex.Match(rawMetar, @"\b(\d+)SM\b");
-            // Context-aware parsing. Only matches standalone 4-digit numbers
-            var visMatchM = System.Text.RegularExpressions.Regex.Match(rawMetar, @"(?<=\s|^)(\d{4})(?=\s|NDV|$)");
-
-            if (visMatchSM.Success) finalVisSM = int.Parse(visMatchSM.Groups[1].Value);
-            else if (visMatchM.Success) {
-                int meters = int.Parse(visMatchM.Groups[1].Value);
-                finalVisSM = meters >= 9999 ? 10 : (int)Math.Round(meters / 1609.34);
-            }
-
-            if (finalVisSM >= 10 || rawMetar.Contains("CAVOK")) {
-                int spread = t - d;
-                if (spread >= 15) finalVisSM = 40;
-                else if (spread >= 10) finalVisSM = 30;
-                else if (spread >= 5) finalVisSM = 20;
-                else finalVisSM = 12;
-            }
-            if (finalVisSM < 1) finalVisSM = 1;
-
-            // 6. PRECIPITATION
-            var precipTokens = new System.Collections.Generic.List<string>();
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(rawMetar, @"\b(-|\+|VC)?(TS|SH|FZ|PR)?(RA|SN|DZ|SG|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS)\b"))
-                if (!precipTokens.Contains(m.Value)) precipTokens.Add(m.Value);
-
-            // --- 7. CLOUDS & ELEVATION MATH (WITH CLEAR SKY OVERRIDE) ---
-            var cloudTokens = new System.Collections.Generic.List<string>();
-            bool hasThick = false;
-            int elevFL = (int)Math.Round(stationElevation / 100.0);
-
-            // NEW: Absolute override for Clear Skies / No Significant Clouds
-            bool isClearSkies = rawMetar.Contains("NSC") || rawMetar.Contains("CLR") || rawMetar.Contains("SKC") || rawMetar.Contains("CAVOK");
-
-            if (!isClearSkies)
+            var profile = new RendererProfile { MaxCloudLayers = 3, EnforceSingleConvectiveLayer = true };
+            var encoder = new TrueSkyWeatherEncoder();
+            string finalString = encoder.Encode(model, profile);
+            
+            if (quality.ConfidenceScore < 100) 
             {
-                var rawCloudMatches = System.Text.RegularExpressions.Regex.Matches(rawMetar, @"(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?");
-                bool convectiveUsed = false;
+                LogEngineEvent($"[WX DIAGNOSTICS] Quality Score: {quality.ConfidenceScore}/100. Issues: {string.Join(", ", quality.MissingFields)}", LogLevel.Debug);
+            }
+            
+            LogEngineEvent($"[WX MODEL] RH={model.RelativeHumidity:F1}%, ConvectiveIdx={model.ConvectiveIndex}", LogLevel.Debug);
+            LogEngineEvent($"[WX] Temp={model.TempC}°C, Dewpoint={model.DewpointC}°C, Visibility={model.PrevailingVisibilitySM}SM", LogLevel.Debug);
+            LogEngineEvent($"[WX] Cloud Layers={model.CloudLayers.Count}, Aloft Tiers={model.Atmosphere.Layers.Count}", LogLevel.Debug);
+            LogEngineEvent($"[WX] Wind={model.WindToken}, Altimeter={model.AltimeterToken}", LogLevel.Debug);
+            LogEngineEvent($"[WX] Diagnostics: Turbulence={model.TurbulenceOutlook} (Score: {model.TurbulenceIndex})", LogLevel.Debug);
+            
+            // --- THE FIX: SIMCONNECT ERROR 16 SANITIZATION BLOCK ---
+            
+            // 1. Strip the '=' sign if it bled through
+            finalString = finalString.Replace("=", "");
 
-                foreach (System.Text.RegularExpressions.Match m in rawCloudMatches) 
-                {
-                    string type = m.Groups[1].Value;
-                    int h = int.Parse(m.Groups[2].Value) + elevFL; 
-                    string vol = m.Groups[3].Value;
-
-                    if (type == "VV") type = "OVC"; 
-                    if (type == "BKN" || type == "OVC") hasThick = true;
-                    
-                    if (string.IsNullOrEmpty(vol) && t >= 24 && (t - d) <= 4) {
-                        vol = precipTokens.Count > 0 && (precipTokens[0].Contains("RA") || precipTokens[0].Contains("TS")) ? "CB" : "TCU";
-                    }
-
-                    if (!string.IsNullOrEmpty(vol))
-                    {
-                        if (convectiveUsed) vol = ""; 
-                        else convectiveUsed = true;   
-                    }
-
-                    cloudTokens.Add($"{type}{h:D3}{vol}");
-                }
-
-                if (precipTokens.Count > 0 && !hasThick) cloudTokens.Add($"BKN{(elevFL + 40):D3}");
-
-                cloudTokens.Sort((a, b) => int.Parse(a.Substring(3, 3)).CompareTo(int.Parse(b.Substring(3, 3))));
-
-                if (cloudTokens.Count > 3) 
-                {
-                    cloudTokens = cloudTokens.GetRange(0, 3);
-                }
+            // 2. Strip European trend forecasts and remarks (P3D crashes on these)
+            string[] badTags = { " NOSIG", " TEMPO", " BECMG", " RMK", " PROB" };
+            foreach (string tag in badTags)
+            {
+                int idx = finalString.IndexOf(tag);
+                if (idx > 0) finalString = finalString.Substring(0, idx);
             }
 
-            // 8. WINDS ALOFT
-            var aloftTokens = new System.Collections.Generic.List<string>();
-            if (_windsCache.Spd10k > 0) aloftTokens.Add($"{_windsCache.Dir10k:D3}{_windsCache.Spd10k:D2}KT&A{(int)(10000*0.3048)}");
-            if (_windsCache.Spd24k > 0) aloftTokens.Add($"{_windsCache.Dir24k:D3}{_windsCache.Spd24k:D2}KT&A{(int)(24000*0.3048)}");
-            if (_windsCache.Spd36k > 0) aloftTokens.Add($"{_windsCache.Dir36k:D3}{_windsCache.Spd36k:D2}KT&A{(int)(36000*0.3048)}");
+            // 3. Convert VRB winds to 000 degrees (P3D math engine crashes on "VRB")
+            finalString = System.Text.RegularExpressions.Regex.Replace(finalString, @"\bVRB(\d{2,3}KT)\b", "000$1");
 
-            // --- 8.5 TURBULENCE & SHEAR DIAGNOSTICS (FUTURE) ---
-            int surfSpd = 0;
-            var surfMatch = System.Text.RegularExpressions.Regex.Match(wind, @"(\d{2,3})KT");
-            if (surfMatch.Success) int.TryParse(surfMatch.Groups[1].Value, out surfSpd);
+            // 4. Force Altimeter to standard FAA format (Axxxx) if it generated QNH (Qxxxx)
+            finalString = System.Text.RegularExpressions.Regex.Replace(finalString, @"\bQ(\d{4})\b", m => 
+            {
+                if (double.TryParse(m.Groups[1].Value, out double qnh))
+                {
+                    return $"A{(int)(qnh * 0.02953 * 100):D4}";
+                }
+                return m.Value;
+            });
 
-            // Reusable diagnostic variables for future Dispatch/Briefing features
-            int shearLow = Math.Abs(_windsCache.Spd10k - surfSpd);
-            int shearHigh = Math.Abs(_windsCache.Spd36k - _windsCache.Spd24k);
-            int jetIntensity = _windsCache.Spd36k;
-            string expectedCAT = (shearHigh > 40 || jetIntensity > 100) ? "MODERATE/SEVERE" : (shearHigh > 20 ? "LIGHT" : "SMOOTH");
+            // 5. Remove duplicate precipitation modifiers that choke the tokenizer
+            finalString = finalString.Replace("RA RA", "RA").Replace("TSRA TSRA", "TSRA").Replace("SHRA RA", "SHRA");
+            finalString = System.Text.RegularExpressions.Regex.Replace(finalString, @"\b([A-Z]{2,5})\s+\1\b", "$1");
 
-            // --- BUILD THE FINAL, STRICTLY ORDERED P3D STRING ---
-            var finalTokens = new System.Collections.Generic.List<string> { "GLOB", timestamp, wind };
-            finalTokens.AddRange(aloftTokens);
-            finalTokens.Add($"{finalVisSM}SM");
-            finalTokens.AddRange(precipTokens);
-            finalTokens.AddRange(cloudTokens);
-            finalTokens.Add(tempStr);
-            finalTokens.Add(altimeter);
-
-            string finalString = string.Join(" ", finalTokens);
+            // 6. Enforce strict single spacing (Double spaces cause Error 16)
+            finalString = System.Text.RegularExpressions.Regex.Replace(finalString, @"\s+", " ").Trim();
             
-            // FIXED: Granular Debug Logging (Silent in Normal/Minimal modes)
-            LogEngineEvent($"[WX] Temp={t}°C, Dewpoint={d}°C, Visibility={finalVisSM}SM", LogLevel.Debug);
-            LogEngineEvent($"[WX] Cloud Layers={cloudTokens.Count}, Aloft Layers={aloftTokens.Count}", LogLevel.Debug);
-            LogEngineEvent($"[WX] Wind={wind}, Altimeter={altimeter}", LogLevel.Debug);
-            LogEngineEvent($"[WX] Diagnostics: LowShear={shearLow}kt, HighShear={shearHigh}kt, CAT={expectedCAT}", LogLevel.Debug);
-            
-            Log($"[3D ENGINE] Injecting flawless string: {finalString}");
             return finalString;
         }
         private string ToAviationDigits(string input)
@@ -1502,6 +1734,9 @@ namespace P3DWeatherEngineGUI
         {
             await fullMapBrowser.EnsureCoreWebView2Async(null);
             
+            // --- ADD THIS LINE: Listen for messages from the map ---
+            fullMapBrowser.WebMessageReceived += FullMapBrowser_WebMessageReceived;
+
             // Wait for the HTML and Leaflet JS to physically finish loading in the browser!
             fullMapBrowser.NavigationCompleted += async (sender, args) =>
             {
@@ -1530,6 +1765,26 @@ namespace P3DWeatherEngineGUI
             fullMapBrowser.CoreWebView2.ExecuteScriptAsync(jsCommand);
         }
 
+        private void PushSkyGridToMap()
+        {
+            // Abort safely if the map hasn't loaded or the grid hasn't been generated
+            if (fullMapBrowser == null || fullMapBrowser.CoreWebView2 == null || _skyGridManager == null) return;
+
+            // Strip down the complex objects into a lightweight JSON payload for the browser
+            var simplifiedCells = _skyGridManager.Cells.Select(c => new {
+                ID = c.CellID,
+                Lat = c.CenterLat,
+                Lon = c.CenterLon,
+                Pri = (int)c.Priority,
+                State = (int)c.State
+            }).ToList();
+
+            string json = System.Text.Json.JsonSerializer.Serialize(simplifiedCells);
+            
+            // Fire the javascript function without reloading the page!
+            _ = fullMapBrowser.CoreWebView2.ExecuteScriptAsync($"if(typeof updateSkyGrid === 'function') {{ updateSkyGrid('{json}'); }}");
+        }
+
         private string GenerateFullMapHtml()
         {
             return @"<!DOCTYPE html>
@@ -1538,7 +1793,6 @@ namespace P3DWeatherEngineGUI
                 <link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' />
                 <script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script>
                 <style>
-                    /* Changed font-family to Product Sans */
                     body { padding: 0; margin: 0; background-color: #111; color: #E0E0E0; font-family: 'Product Sans', 'Segoe UI', Tahoma, sans-serif; overflow: hidden; }
                     #map { height: 100vh; width: 100vw; z-index: 1; }
                     .leaflet-control-attribution, .leaflet-control-zoom { display: none !important; }
@@ -1551,11 +1805,10 @@ namespace P3DWeatherEngineGUI
                     .layer-toggle { display: flex; align-items: center; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
                     .layer-toggle input { margin-right: 8px; accent-color: #D87A1E; }
                     
-                    /* Pushed right margin to 290px to prevent overlap */
                     #winds-selector { top: 20px; right: 290px; display: flex; padding: 5px; gap: 2px; display: none; }
-                    
                     .alt-btn { background: transparent; color: #aaa; border: none; padding: 6px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: bold; font-family: 'Product Sans', 'Segoe UI', sans-serif; }
                     .alt-btn.active { background: #555; color: #D87A1E; }
+                    
                     #status-bar { bottom: 0; left: 0; width: 100%; height: 30px; background: rgba(15, 15, 15, 0.95); border-top: 1px solid #333; z-index: 1000; position: absolute; display: flex; align-items: center; padding: 0 15px; font-size: 12px; color: #888; }
                     .status-item { margin-right: 25px; }
                     .status-val { color: #fff; font-weight: bold; margin-left: 5px; }
@@ -1563,9 +1816,6 @@ namespace P3DWeatherEngineGUI
                     .leaflet-popup-tip { background: #222; }
                     .pop-title { font-size: 18px; font-weight: bold; color: #D87A1E; margin: 0 0 10px 0; border-bottom: 1px solid #444; padding-bottom: 5px; }
                     .pop-row { margin-bottom: 5px; font-size: 12px; }
-                    .pop-row span { color: #aaa; width: 60px; display: inline-block; }
-                    .pop-btn { margin-top: 10px; background: #444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; width: 48%; font-size: 11px; font-family: 'Product Sans', 'Segoe UI', sans-serif; }
-                    .pop-btn.primary { background: #D87A1E; }
                 </style>
             </head>
             <body>
@@ -1587,10 +1837,12 @@ namespace P3DWeatherEngineGUI
                     <label class='layer-toggle'><input type='checkbox' checked onchange='toggleLayer(this, aircraftLayer)'> Aircraft Position</label>
                     <label class='layer-toggle'><input type='checkbox' checked onchange='toggleLayer(this, routeLayer)'> Flight Route</label>
                     <label class='layer-toggle'><input type='checkbox' onchange='toggleLayer(this, airportsLayer)'> Airports (METAR)</label>
+                    
                     <div class='layer-header'>Meteorology</div>
                     <label class='layer-toggle'><input type='checkbox' onchange='toggleWinds(this)'> Winds Aloft</label>
-                    <label class='layer-toggle'><input type='checkbox' onchange='toggleLayer(this, radarLayer)'> Wx Radar (Placeholder)</label>
-                    <label class='layer-toggle'><input type='checkbox' onchange='toggleLayer(this, turbulenceLayer)'> Turbulence (Placeholder)</label>
+                    
+                    <div class='layer-header' style='color:#10B981;'>Developer / Debug</div>
+                    <label class='layer-toggle'><input type='checkbox' id='chkSkyGrid' onchange='toggleLayer(this, skyGridLayer)'> SkyGrid Engine</label>
                 </div>
 
                 <div id='status-bar'>
@@ -1607,13 +1859,11 @@ namespace P3DWeatherEngineGUI
                     var routeLayer = L.layerGroup().addTo(map);
                     var airportsLayer = L.layerGroup();
                     var windsLayer = L.layerGroup();
-                    var radarLayer = L.layerGroup();
-                    var turbulenceLayer = L.layerGroup();
+                    var skyGridLayer = L.layerGroup();
 
-                    // Wind Global Storage
                     var activeWindData = null;
                     var activeUtcHour = 0;
-                    var activeFlightLevel = '36k'; // Default to FL360 (250hPa)
+                    var activeFlightLevel = '36k';
 
                     function toggleLayer(cb, layer) { cb.checked ? map.addLayer(layer) : map.removeLayer(layer); }
                     function toggleWinds(cb) {
@@ -1626,17 +1876,14 @@ namespace P3DWeatherEngineGUI
                         let svg = `<svg width=""40"" height=""40"" viewBox=""0 0 40 40"" style=""transform: rotate(${dir}deg); transform-origin: 20px 20px;"">`;
                         svg += `<circle cx=""20"" cy=""20"" r=""2.5"" fill=""#D87A1E""/>`; 
                         svg += `<line x1=""20"" y1=""20"" x2=""20"" y2=""2"" stroke=""#E0E0E0"" stroke-width=""1.5""/>`;
-                        
                         let y = 2; let s = speed;
                         while(s >= 50) { svg += `<polygon points=""20,${y} 20,${y+5} 28,${y+2}"" fill=""#E0E0E0""/>`; s -= 50; y += 6; }
                         while(s >= 10) { svg += `<line x1=""20"" y1=""${y}"" x2=""28"" y2=""${y-4}"" stroke=""#E0E0E0"" stroke-width=""1.5""/>`; s -= 10; y += 4; }
                         if(s >= 5) { svg += `<line x1=""20"" y1=""${y}"" x2=""24"" y2=""${y-2}"" stroke=""#E0E0E0"" stroke-width=""1.5""/>`; }
                         svg += `</svg>`;
-                        
                         return L.divIcon({ className: '', html: svg, iconSize: [40, 40], iconAnchor: [20, 20] });
                     }
 
-                    // --- RENDER LIVE WINDS FROM C# ---
                     function buildRealWindsGrid(apiData, currentHour) {
                         activeWindData = apiData;
                         activeUtcHour = currentHour;
@@ -1647,37 +1894,57 @@ namespace P3DWeatherEngineGUI
                         document.querySelectorAll('.alt-btn').forEach(b => b.classList.remove('active'));
                         btn.classList.add('active');
                         activeFlightLevel = btn.getAttribute('data-lvl');
-                        drawWinds(); // Redraw map without needing a new API call!
+                        drawWinds(); 
                     }
 
                     function drawWinds() {
                         if (!activeWindData) return;
                         windsLayer.clearLayers();
                         
-                        // Open-Meteo batch response arrays
-                        let lats = activeWindData.latitude || [activeWindData.latitude];
-                        let lons = activeWindData.longitude || [activeWindData.longitude];
-                        
-                        // If it's a batch request, open-meteo returns an array of forecast objects
                         let locations = Array.isArray(activeWindData) ? activeWindData : [activeWindData];
                         
-                        locations.forEach((loc, index) => {
+                        locations.forEach((loc) => {
                             let spdKey = activeFlightLevel === '36k' ? 'wind_speed_250hPa' : (activeFlightLevel === '24k' ? 'wind_speed_500hPa' : 'wind_speed_700hPa');
                             let dirKey = activeFlightLevel === '36k' ? 'wind_direction_250hPa' : (activeFlightLevel === '24k' ? 'wind_direction_500hPa' : 'wind_direction_700hPa');
-                            
+        
                             let spd = Math.round(loc.hourly[spdKey][activeUtcHour]);
                             let dir = Math.round(loc.hourly[dirKey][activeUtcHour]);
-                            
+                  
                             let marker = L.marker([loc.latitude, loc.longitude], {icon: getWindBarbIcon(spd, dir), interactive: true}).addTo(windsLayer);
                             
                             marker.on('mouseover', function() { document.getElementById('sb-wind').innerText = `${dir}° @ ${spd} kt`; document.getElementById('sb-wind').style.color = '#D87A1E'; });
-                            marker.on('mouseout', function() { document.getElementById('sb-wind').innerText = '-- / --'; document.getElementById('sb-wind').style.color = '#fff'; });
+                            marker.on('mouseout', function() { document.getElementById('sb-wind').innerText = '-- / --'; document.getElementById('sb-wind').style.color = '#888'; });
                         });
                     }
 
-                    // PLACEHOLDERS (Removed Dummy Winds & Airports, kept radar/turb so you can still test toggles)
-                    L.circle([24.5, 54.5], { radius: 100000, color: 'none', fillColor: '#3B82F6', fillOpacity: 0.4 }).addTo(radarLayer);
-                    L.polygon([[22, 50], [24, 52], [22, 54]], {color: '#F59E0B', weight: 1, fillColor: '#F59E0B', fillOpacity: 0.3}).addTo(turbulenceLayer);
+                    function updateSkyGrid(gridDataJson) {
+                        if(typeof skyGridLayer === 'undefined') return;
+                        skyGridLayer.clearLayers();
+                        var chk = document.getElementById('chkSkyGrid');
+                        if (!chk || !chk.checked) return;
+
+                        var cells = JSON.parse(gridDataJson);
+                        var halfSp = 0.35; 
+
+                        cells.forEach(function(c) {
+                            var color = '#333'; var op = 0.1;
+                            if (c.State === 1) { color = '#F59E0B'; op = 0.3; } 
+                            if (c.State === 2) { color = '#3B82F6'; op = 0.4; } 
+                            if (c.State === 3) { color = '#10B981'; op = 0.5; } 
+                            if (c.State === 4) { color = '#D87A1E'; op = 0.4; } 
+                            if (c.State === 5) { color = '#EF4444'; op = 0.2; } 
+
+                            if (c.State > 0) { 
+                                var bounds = [[c.Lat - halfSp, c.Lon - halfSp], [c.Lat + halfSp, c.Lon + halfSp]];
+                                var rect = L.rectangle(bounds, {color: color, weight: 1, fillOpacity: op, dashArray: '4,4'}).addTo(skyGridLayer);
+                                var marker = L.circleMarker([c.Lat, c.Lon], {radius: 3, color: color, fillOpacity: 1}).addTo(skyGridLayer);
+
+                                var stateNames = ['UNLOADED','REQUESTING','READY','INJECTED','STALE','DISCARDED'];
+                                var tipHtml = '<b>' + c.ID + '</b><br>State: ' + stateNames[c.State] + '<br>Priority: P' + (c.Pri + 1);
+                                rect.bindTooltip(tipHtml);
+                            }
+                        });
+                    }
 
                     var planeMarker;
                     function updateAircraft(lat, lon, hdg, gs, alt) {
@@ -1770,13 +2037,23 @@ namespace P3DWeatherEngineGUI
             {
                 // Wait 3 seconds to ensure P3D's environment is fully loaded before painting the canvas
                 await System.Threading.Tasks.Task.Delay(3000);
+                
+                string baselineMetar = $"GLOB {DateTime.UtcNow:ddHHmm}Z 00000KT";
 
-                string baselineMetar = "GLOB 010000Z 00000KT 20SM 15/10 A2992";
+                // SHIELD: Prevent overwriting the winds aloft if they were already fetched!
+                if (_windsCache.Layers.ContainsKey(360))
+                {
+                    baselineMetar += $" {_windsCache.Layers[100].Direction:D3}{_windsCache.Layers[100].Speed:D2}KT&A3048";
+                    baselineMetar += $" {_windsCache.Layers[240].Direction:D3}{_windsCache.Layers[240].Speed:D2}KT&A7315";
+                    baselineMetar += $" {_windsCache.Layers[360].Direction:D3}{_windsCache.Layers[360].Speed:D2}KT&A10973";
+                }
+
+                baselineMetar += " 100SM CLR 15/10 A2992";
 
                 if (simconnect != null)
                 {
                     simconnect.WeatherSetObservation(0, baselineMetar);
-                    LogEngineEvent("[ENGINE] Global Atmospheric Baseline (20SM Haze) injected successfully.", LogLevel.Normal);
+                    LogEngineEvent("[ENGINE] Global Atmospheric Baseline injected successfully.", LogLevel.Normal);
                 }
             }
             catch (Exception ex)
@@ -1784,92 +2061,87 @@ namespace P3DWeatherEngineGUI
                 LogEngineEvent($"[ENGINE] Failed to inject baseline atmosphere: {ex.Message}", LogLevel.Debug);
             }
         }
-        private async Task InjectFlightPlanWeatherAsync(System.Collections.Generic.List<Waypoint> route)
+        private async System.Threading.Tasks.Task InjectFlightPlanWeatherAsync(System.Collections.Generic.List<Waypoint> route)
         {
             if (route == null || route.Count == 0) return;
-
-            LogEngineEvent($"[DISPATCH] Initiating Local Injection for {route.Count} waypoints...", LogLevel.Normal);
+            LogEngineEvent($"[DISPATCH] Initiating Local Route Injection for {route.Count} waypoints...", LogLevel.Normal);
             
-            // 1. Clear the background polling corridor for the new flight
             _activeRouteStations.Clear();
-
-            // NEW: Temporary memory to prevent duplicate injections on clustered waypoints
             System.Collections.Generic.HashSet<string> injectedThisRun = new System.Collections.Generic.HashSet<string>();
 
             foreach (var waypoint in route)
             {
-                // FIXED: Safely fetch the list of stations without risking a null Tuple assignment
-                var nearestStations = locator.GetNearestStations(waypoint.Latitude, waypoint.Longitude, 1);
+                var nearestStations = await System.Threading.Tasks.Task.Run(() => locator.GetNearestStations(waypoint.Latitude, waypoint.Longitude, 1));
                 
-                string finalP3dString = "";
-                // FIXED: Use null-coalescing (??) to guarantee a string, silencing the CS8604 warning
-                string injectionId = waypoint.Ident ?? "WPT"; 
-
-                // NEW: If we already injected this exact station/waypoint 5 seconds ago, skip it!
-                if (nearestStations != null && nearestStations.Count > 0 && nearestStations[0].Station.ICAO != null)
-                {
-                    double dist = CalculateDistanceNM(waypoint.Latitude, waypoint.Longitude, nearestStations[0].Station.Latitude, nearestStations[0].Station.Longitude);
-                    if (dist <= 50) injectionId = nearestStations[0].Station.ICAO; 
-                }
-
-                // THE SHIELD: Add() returns false if it's already in the list.
-                if (!injectedThisRun.Add(injectionId))
-                {
-                    continue; // Skip the rest of the loop and move to the next waypoint
-                }
-
-                // FIXED: Check if the list actually contains items instead of checking if a Tuple is null
                 if (nearestStations != null && nearestStations.Count > 0)
                 {
-                    var nearest = nearestStations[0]; // Safely grab the first item
-
-                    // 2. Check the distance (The 50 NM Oceanic Rule)
+                    var nearest = nearestStations[0];
                     double distanceToStation = CalculateDistanceNM(waypoint.Latitude, waypoint.Longitude, nearest.Station.Latitude, nearest.Station.Longitude);
                     
-                    if (distanceToStation <= 50 && nearest.Station.ICAO != null)
+                    if (distanceToStation <= 250 && !string.IsNullOrEmpty(nearest.Station.ICAO) && nearest.Station.ICAO.Length == 4)
                     {
-                        // WAYPOINT IS OVER LAND: Use the real terrestrial airport
-                        injectionId = nearest.Station.ICAO;
-                        _activeRouteStations.Add(injectionId); // Add to VATSIM background sync corridor
+                        string injectionIcao = nearest.Station.ICAO;
 
-                        var wxData = await FetchMetarDataAsync(injectionId);
-                        if (!string.IsNullOrEmpty(wxData.raw))
+                        if (injectedThisRun.Add(injectionIcao))
                         {
-                            // Pass through your indestructible parser using the station elevation
-                            finalP3dString = ParseAndSanitizeMetar(wxData.raw, nearest.Station.Elevation);
+                            _activeRouteStations.Add(injectionIcao);
+                            string rawMetar = await FetchVatsimMetarAsync(injectionIcao);
+                            
+                            if (!string.IsNullOrEmpty(rawMetar))
+                            {
+                                // --- THE COMPILER FIX: Call the Async version and await it! ---
+                                await EnsureWeatherStationExistsAsync(injectionIcao, nearest.Station.Latitude, nearest.Station.Longitude, nearest.Station.Elevation);
+
+                                AtmosphericProfile localWinds = await FetchWindsForCoordinateAsync(nearest.Station.Latitude, nearest.Station.Longitude);
+                                string baseP3dString = ParseAndSanitizeMetar(rawMetar, nearest.Station.Elevation, localWinds);
+                                string localP3dString = baseP3dString.Replace("GLOB", injectionIcao);
+
+                                if (simconnect != null)
+                                {
+                                    LogEngineEvent($"[INJECT LOCAL] -> {localP3dString}", LogLevel.Normal);
+                                    Dispatcher.Invoke(() => 
+                                    {
+                                        try { simconnect.WeatherSetObservation(0, localP3dString); }
+                                        catch (Exception ex) { LogEngineEvent($"[SIMCONNECT] Local injection failed: {ex.Message}", LogLevel.Normal); }
+                                    });
+                                }
+                            }
                         }
                     }
-                    else
-                    {
-                        // WAYPOINT IS OVER OCEAN: Generate Synthetic Weather
-                        string syntheticMetar = await GenerateSyntheticOceanicMetarAsync(injectionId, waypoint.Latitude, waypoint.Longitude);
-                        finalP3dString = ParseAndSanitizeMetar(syntheticMetar, 0); // Elevation is 0 (sea level)
-                    }
                 }
-                else
-                {
-                    // Extreme fallback: Locator failed, force oceanic generation
-                    string syntheticMetar = await GenerateSyntheticOceanicMetarAsync(injectionId, waypoint.Latitude, waypoint.Longitude);
-                    finalP3dString = ParseAndSanitizeMetar(syntheticMetar, 0);
-                }
-
-                // 3. Inject into Prepar3D!
-                if (!string.IsNullOrEmpty(finalP3dString))
-                {
-                    // CRITICAL: Convert the GLOBAL string into a LOCAL string!
-                    finalP3dString = finalP3dString.Replace("GLOB", injectionId);
-
-                    // TODO: Replace this line with your actual SimConnect weather injection command
-                    LogEngineEvent($"[INJECT LOCAL] -> {finalP3dString}", LogLevel.Debug);
-                }
-
-                // Anti-spam delay so we don't hammer the APIs
-                await Task.Delay(200);
+                await System.Threading.Tasks.Task.Delay(50);
             }
 
             LogEngineEvent($"[DISPATCH] Local Injection Complete. {_activeRouteStations.Count} stations added to VATSIM sync corridor.", LogLevel.Normal);
             
-            // 4. Start the 5-minute background polling!
+            if (_skyGridManager != null)
+            {
+                var activeCells = _skyGridManager.Cells.Where(c => c.State == CellState.READY || c.State == CellState.INJECTED).ToList();
+                if (activeCells.Count > 0)
+                {
+                    LogEngineEvent($"[SKYGRID] Updating weather for {activeCells.Count} active grid cells from Open-Meteo...", LogLevel.Normal);
+                    foreach (var cell in activeCells)
+                    {
+                        string rawMetar = await FetchGridMetarAsync(cell.CenterLat, cell.CenterLon, cell.CellID);
+                        AtmosphericProfile localWinds = await FetchWindsForCoordinateAsync(cell.CenterLat, cell.CenterLon);
+                        string safeP3dString = ParseAndSanitizeMetar(rawMetar, 0, localWinds);
+
+                        safeP3dString = safeP3dString.Replace("GLOB", cell.CellID);
+
+                        if (simconnect != null)
+                        {
+                            Dispatcher.Invoke(() => 
+                            {
+                                try { simconnect.WeatherSetObservation(0, safeP3dString); }
+                                catch (Exception ex) { LogEngineEvent($"[SIMCONNECT] Grid injection failed: {ex.Message}", LogLevel.Debug); }
+                            });
+                        }
+                        await System.Threading.Tasks.Task.Delay(50);
+                    }
+                    LogEngineEvent($"[SKYGRID] Spatial weather update complete.", LogLevel.Normal);
+                }
+            }
+
             InitializeVatsimRouteSync();
             _vatsimSyncTimer.Start();
         }
@@ -1894,35 +2166,68 @@ namespace P3DWeatherEngineGUI
             catch { return ""; }
         }
 
-        private async Task SyncRouteWithVatsimAsync()
+        private async System.Threading.Tasks.Task SyncRouteWithVatsimAsync()
         {
             if (_activeRouteStations.Count == 0) return;
-
             LogEngineEvent($"[CORRIDOR SYNC] Polling VATSIM for {_activeRouteStations.Count} enroute stations...", LogLevel.Normal);
 
             foreach (var icao in _activeRouteStations)
             {
                 string vatsimMetar = await FetchVatsimMetarAsync(icao);
-                
                 if (!string.IsNullOrEmpty(vatsimMetar))
                 {
-                    // Assuming you have a way to get the elevation from a local DB, default to 0 for enroute updates if unknown
-                    double elevationFallback = 0; 
-                    
-                    // Pass the VATSIM string through our indestructible parser!
-                    string safeP3dString = ParseAndSanitizeMetar(vatsimMetar, elevationFallback);
-                    
-                    // TODO: Send safeP3dString to Prepar3D via SimConnect Local Injection
+                    var station = locator.GetStationByIcao(icao);
+                    double elevation = station != null ? station.Elevation : 0;
+                    AtmosphericProfile localWinds = null;
+                    if (station != null)
+                    {
+                        localWinds = await FetchWindsForCoordinateAsync(station.Latitude, station.Longitude);
+                        
+                        // --- THE COMPILER FIX: Call the Async version and await it! ---
+                        await EnsureWeatherStationExistsAsync(icao, station.Latitude, station.Longitude, station.Elevation);
+                    }
+
+                    string safeP3dString = ParseAndSanitizeMetar(vatsimMetar, elevation, localWinds);
+                    if (!string.IsNullOrEmpty(safeP3dString))
+                    {
+                        safeP3dString = safeP3dString.Replace("GLOB", icao);
+
+                        if (simconnect != null)
+                        {
+                            Dispatcher.Invoke(() => 
+                            {
+                                try { simconnect.WeatherSetObservation(0, safeP3dString); }
+                                catch (Exception ex) { LogEngineEvent($"[SIMCONNECT] Background injection failed: {ex.Message}", LogLevel.Debug); }
+                            });
+                        }
+                    }
+
                     LogEngineEvent($"[VATSIM SYNC] Updated {icao} locally.", LogLevel.Debug);
                 }
-
-                // ANTI-SPAM PROTECTION: Wait 300ms between each station so VATSIM doesn't rate-limit us
-                await Task.Delay(300);
+                await System.Threading.Tasks.Task.Delay(300);
             }
             
             LogEngineEvent($"[CORRIDOR SYNC] Background weather refresh complete.", LogLevel.Debug);
-        }
 
+            string currentlyDisplayedIcao = "";
+            Dispatcher.Invoke(() => {
+                currentlyDisplayedIcao = lblStationName.Text.Trim().ToUpper();
+            });
+
+            if (!string.IsNullOrEmpty(currentlyDisplayedIcao) && _activeRouteStations.Contains(currentlyDisplayedIcao))
+            {
+                var station = locator.GetStationByIcao(currentlyDisplayedIcao);
+                if (station != null)
+                {
+                    LogEngineEvent($"[UI SYNC] Refreshing UI for active station: {currentlyDisplayedIcao}.", LogLevel.Normal);
+                    var list = new System.Collections.Generic.List<(WeatherStation Station, double Distance)> { (station, 0.0) };
+                    await Dispatcher.InvokeAsync(async () => {
+                        await UpdateInterpolatedWeatherAsync(list); 
+                    });
+                }
+            }
+        }
+        private SkyGridManager _skyGridManager;      
         private async void BtnImportSimbrief_Click(object sender, RoutedEventArgs e)    
         {
             string username = txtSimbriefId.Text.Trim();
@@ -1940,45 +2245,31 @@ namespace P3DWeatherEngineGUI
                 SimBriefService sbService = new SimBriefService();
                 SimBriefData ofp = await sbService.FetchLatestOFPAsync(username);
 
-                // Populate Dispatch Summary Card
                 lblBriefFlight.Text = $"{ofp.Airline}{ofp.FlightNumber}";
                 lblBriefRoute.Text = $"{ofp.DepartureICAO} → {ofp.ArrivalICAO}";
                 lblBriefDist.Text = $"{ofp.DistanceNM} NM";
                 
-                // Convert raw seconds to HH:mm
                 if (int.TryParse(ofp.BlockTime, out int seconds))
                 {
                     TimeSpan time = TimeSpan.FromSeconds(seconds);
                     lblBriefTime.Text = $"{(int)time.TotalHours:D2}:{time.Minutes:D2}";
                 }
 
-                // --- CRUISE ALTITUDE FORMATTER ---
                 string rawAlt = ofp.CruiseAltitude ?? "";
-                if (int.TryParse(rawAlt, out int altFeet) && altFeet >= 1000)
-                {
-                    // Safely divides 40000 by 100 to get FL400
+                if (int.TryParse(rawAlt, out int altFeet) && altFeet >= 1000) {
                     lblBriefCruise.Text = $"FL{altFeet / 100}";
                 }
-                else
-                {
-                    // Fallback just in case SimBrief sends "F400" or "FL400" text instead of raw feet
+                else {
                     lblBriefCruise.Text = rawAlt.StartsWith("FL") ? rawAlt : (rawAlt.StartsWith("F") ? $"FL{rawAlt.Substring(1)}" : $"FL{rawAlt}");
                 }
 
                 LogEngineEvent($"[DISPATCH] Successfully parsed SimBrief OFP for {lblBriefFlight.Text}.", LogLevel.Normal);
-
-                // Draw the Magenta Route on the Map safely
-                if (ofp.RouteWaypoints != null && ofp.RouteWaypoints.Count > 0)
-                {
+                if (ofp.RouteWaypoints != null && ofp.RouteWaypoints.Count > 0) {
                     await DrawFlightPlanMapAsync(ofp.RouteWaypoints);
                 }
 
-                // Trigger Weather Briefing Generation based on the new route
                 await GenerateFlightBriefingAsync(ofp.DepartureICAO, ofp.ArrivalICAO, ofp.RouteWaypoints);
-                // --- NEW: COMBINE MAIN ROUTE AND ALTERNATE ROUTE ---
                 var combinedRoute = new System.Collections.Generic.List<Waypoint>(ofp.RouteWaypoints);
-                
-                // Check if your SimBrief parser actually grabbed the alternates!
                 if (ofp.AlternateWaypoints != null && ofp.AlternateWaypoints.Count > 0)
                 {
                     combinedRoute.AddRange(ofp.AlternateWaypoints);
@@ -1987,15 +2278,15 @@ namespace P3DWeatherEngineGUI
 
                 _currentFlightPlanWaypoints = combinedRoute;
                 
-                // --- NEW: PRE-CALCULATE STATIONS FIRST ---
+                // THE FIX: PASSED SIMCONNECT DIRECTLY INTO THE MANAGER!
+                if (_skyGridManager == null) _skyGridManager = new SkyGridManager(this.LogEngineEvent, this.simconnect);
+                _skyGridManager.GenerateGridFromRoute(_currentFlightPlanWaypoints);
+
                 await CalculateEnrouteStationsAsync(_currentFlightPlanWaypoints);
-                
                 BtnInjectPlanWx.IsEnabled = true;
-                
-                // --- NEW: SAVE GLOBALLY AND PUSH TO MAP ---
-                _currentOfp = ofp; // Save it for the Map tab!
+                _currentOfp = ofp; 
                 await PushLiveAirportsToMapAsync(ofp);
-                
+                PushSkyGridToMap();
             }
             catch (Exception ex)
             {
@@ -2134,7 +2425,7 @@ namespace P3DWeatherEngineGUI
         private async System.Threading.Tasks.Task PushLiveAirportsToMapAsync(SimBriefData ofp)
         {
             if (fullMapBrowser == null || fullMapBrowser.CoreWebView2 == null) return;
-
+            
             // 1. NO-OFP FALLBACK PROMPT
             if (ofp == null || ofp.RouteWaypoints == null || ofp.RouteWaypoints.Count < 2)
             {
@@ -2144,45 +2435,36 @@ namespace P3DWeatherEngineGUI
                 return;
             }
 
-            // 2. CLEAR DUMMY DATA
+            // 2. CLEAR DUMMY DATA & DRAW ROUTE
             string jsCommand = "airportsLayer.clearLayers();\nrouteLayer.clearLayers();\n";
-
-            // 3. DRAW THE MAGENTA ROUTE LINE
             var coordsList = new System.Collections.Generic.List<string>();
             foreach (var wp in ofp.RouteWaypoints)
             {
                 coordsList.Add($"[{wp.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {wp.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}]");
             }
             string jsCoords = string.Join(",", coordsList);
-            
             jsCommand += $@"
                 var routeCoords = [{jsCoords}];
                 var routeLine = L.polyline(routeCoords, {{ color: '#FF00FF', weight: 3, opacity: 0.9, lineJoin: 'round' }}).addTo(routeLayer);
                 routeCoords.forEach(function(coord) {{ L.circleMarker(coord, {{ radius: 2, color: '#FFFFFF', weight: 1, fillOpacity: 1 }}).addTo(routeLayer); }});
                 map.fitBounds(routeLine.getBounds(), {{ padding: [30, 30] }});
             ";
-
-            // 4. EXTRACT CRITICAL OFP STATIONS & ENROUTE AIRPORTS SAFELY
-            // Using a dictionary to pair the ICAO directly with its precise Map Coordinates
+            
+            // 3. EXTRACT CRITICAL OFP STATIONS SAFELY
             var stationsToPlot = new System.Collections.Generic.Dictionary<string, (double lat, double lon)>();
-
-            if (!string.IsNullOrEmpty(ofp.DepartureICAO))
-                stationsToPlot[ofp.DepartureICAO] = (ofp.RouteWaypoints[0].Latitude, ofp.RouteWaypoints[0].Longitude);
-                
-            if (!string.IsNullOrEmpty(ofp.ArrivalICAO))
-                stationsToPlot[ofp.ArrivalICAO] = (ofp.RouteWaypoints[ofp.RouteWaypoints.Count - 1].Latitude, ofp.RouteWaypoints[ofp.RouteWaypoints.Count - 1].Longitude);
-
+            if (!string.IsNullOrEmpty(ofp.DepartureICAO)) stationsToPlot[ofp.DepartureICAO] = (ofp.RouteWaypoints[0].Latitude, ofp.RouteWaypoints[0].Longitude);
+            if (!string.IsNullOrEmpty(ofp.ArrivalICAO)) stationsToPlot[ofp.ArrivalICAO] = (ofp.RouteWaypoints[ofp.RouteWaypoints.Count - 1].Latitude, ofp.RouteWaypoints[ofp.RouteWaypoints.Count - 1].Longitude);
+            
             if (ofp.AlternateWaypoints != null && ofp.AlternateWaypoints.Count > 0)
             {
                 var altn = ofp.AlternateWaypoints[ofp.AlternateWaypoints.Count - 1];
-                if (!string.IsNullOrEmpty(altn.Ident))
-                    stationsToPlot[altn.Ident] = (altn.Latitude, altn.Longitude);
+                if (!string.IsNullOrEmpty(altn.Ident)) stationsToPlot[altn.Ident] = (altn.Latitude, altn.Longitude);
             }
 
-            // Match the _activeRouteStations back to their exact coordinates using the locator safely
+            // THE LAG FIX: Background thread the heavy 43,000 airport sorting!
             foreach (var wp in ofp.RouteWaypoints)
             {
-                var nearestList = locator.GetNearestStations(wp.Latitude, wp.Longitude, 1);
+                var nearestList = await System.Threading.Tasks.Task.Run(() => locator.GetNearestStations(wp.Latitude, wp.Longitude, 1));
                 if (nearestList != null && nearestList.Count > 0)
                 {
                     var stn = nearestList[0].Station;
@@ -2193,67 +2475,75 @@ namespace P3DWeatherEngineGUI
                 }
             }
 
-            // 5. FETCH LIVE WEATHER FOR PRE-CALCULATED STATIONS
-            int stationsPlotted = 0;
+            // 4. CONTROLLED ASYNC FETCHING
+            var fetchTasks = new System.Collections.Generic.List<System.Threading.Tasks.Task<(string icao, double lat, double lon, string raw, int wdir, int wspd, double temp, double dew, double alt)>>();
+            using var semaphore = new System.Threading.SemaphoreSlim(5);
             foreach (var kvp in stationsToPlot)
             {
                 string icao = kvp.Key;
                 double lat = kvp.Value.lat;
                 double lon = kvp.Value.lon;
 
-                var wx = await FetchMetarDataAsync(icao);
-                if (string.IsNullOrEmpty(wx.raw)) continue;
+                fetchTasks.Add(System.Threading.Tasks.Task.Run(async () => 
+                {
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        var wx = await FetchMetarDataAsync(icao);
+                        return (icao, lat, lon, wx.raw, wx.wdir, wx.wspd, wx.temp, wx.dew, wx.alt);
+                    }
+                    finally { semaphore.Release(); }
+                }));
+            }
 
-                string cat = GetFlightCategory(wx.raw);
+            var completedStations = await System.Threading.Tasks.Task.WhenAll(fetchTasks);
+            
+            // 5. BUILD UI
+            int stationsPlotted = 0;
+            foreach (var stn in completedStations)
+            {
+                if (string.IsNullOrEmpty(stn.raw)) continue;
+                string cat = GetFlightCategory(stn.raw);
                 string catColor = cat == "VFR" ? "#10B981" : cat == "MVFR" ? "#F59E0B" : cat == "IFR" ? "#EF4444" : "#8B5CF6";
-
                 string roleTag = "";
-                if (icao == ofp.DepartureICAO) roleTag = " - DEPARTURE";
-                else if (icao == ofp.ArrivalICAO) roleTag = " - ARRIVAL";
-                else if (ofp.AlternateWaypoints != null && ofp.AlternateWaypoints.Any(a => a.Ident == icao)) roleTag = " - ALTERNATE";
-
+                if (stn.icao == ofp.DepartureICAO) roleTag = " - DEPARTURE";
+                else if (stn.icao == ofp.ArrivalICAO) roleTag = " - ARRIVAL";
+                else if (ofp.AlternateWaypoints != null && ofp.AlternateWaypoints.Any(a => a.Ident == stn.icao)) roleTag = " - ALTERNATE";
+                
                 string popupHtml = $@"
-                    <div class='pop-title'>{icao}{roleTag}</div>
+                    <div class='pop-title'>{stn.icao}{roleTag}</div>
                     <div class='pop-row'><span>Cat:</span> <b style='color:{catColor}'>{cat}</b></div>
-                    <div class='pop-row'><span>METAR:</span> {wx.raw}</div>
-                    <div class='pop-row'><span>Wind:</span> {wx.wdir:D3}° @ {wx.wspd} kts</div>
-                    <div class='pop-row'><span>Temp:</span> {wx.temp}°C (Dew: {wx.dew}°C)</div>
-                    <div class='pop-row'><span>Altimeter:</span> {wx.alt:F2}</div>
-                    <button class='pop-btn primary'>Inject WX</button> <button class='pop-btn' style='float:right;'>Refresh</button>
+                    <div class='pop-row'><span>METAR:</span> {stn.raw}</div>
+                    <div class='pop-row'><span>Wind:</span> {stn.wdir:D3}° @ {stn.wspd} kts</div>
+                    <div class='pop-row'><span>Temp:</span> {stn.temp}°C (Dew: {stn.dew}°C)</div>
+                    <div class='pop-row'><span>Altimeter:</span> {stn.alt:F2}</div>
+                    <button class='pop-btn primary' onclick='window.chrome.webview.postMessage(""INJECT_METAR|{stn.icao}|{stn.lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{stn.lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}"");'>Inject WX</button> 
+                    <button class='pop-btn' style='float:right;'>Refresh</button>
                 ";
-
                 jsCommand += $@"
-                    var icon_{icao} = L.divIcon({{ className: '', html: ""<div style='background:{catColor}; width:12px; height:12px; border-radius:50%; border:2px solid #000; box-shadow:0 0 4px #000;'></div>"", iconSize:[12,12], iconAnchor:[6,6] }});
-                    var marker_{icao} = L.marker([{lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}], {{icon: icon_{icao}}}).addTo(airportsLayer);
-                    marker_{icao}.bindPopup(`{popupHtml}`, {{maxWidth: 300}});
+                    var icon_{stn.icao} = L.divIcon({{ className: '', html: ""<div style='background:{catColor}; width:12px; height:12px; border-radius:50%; border:2px solid #000; box-shadow:0 0 4px #000;'></div>"", iconSize:[12,12], iconAnchor:[6,6] }});
+                    var marker_{stn.icao} = L.marker([{stn.lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {stn.lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}], {{icon: icon_{stn.icao}}}).addTo(airportsLayer);
+                    marker_{stn.icao}.bindPopup(`{popupHtml}`, {{maxWidth: 300}});
                 ";
                 stationsPlotted++;
             }
 
-            // --- NEW WIND GRID INJECTION ---
             string gridJson = await FetchWindsGridAsync(ofp.RouteWaypoints);
             if (!string.IsNullOrEmpty(gridJson))
             {
                 int currentHour = DateTime.UtcNow.Hour;
-                
-                // We pass the massive JSON block and the current hour directly to JavaScript
-                // so the browser handles the heavy UI lifting and alt-switching!
                 jsCommand += $@"
                     var windApiData = {gridJson};
                     var currentUtcHour = {currentHour};
-                    
-                    // We call the new JS function (which we will add in Step 3)
                     if(typeof buildRealWindsGrid === 'function') {{
                         buildRealWindsGrid(windApiData, currentUtcHour);
                     }}
                 ";
             }
 
-            // 6. INJECT INTO LEAFLET ENGINE
             _ = fullMapBrowser.CoreWebView2.ExecuteScriptAsync(jsCommand);
             LogEngineEvent($"[MAP] Drew flight route and pushed {stationsPlotted} live OFP airports to the map layer.", LogLevel.Normal);
         }
-
         private async Task GenerateFlightBriefingAsync(string depIcao, string arrIcao, System.Collections.Generic.List<Waypoint> waypoints)
         {
             LogEngineEvent($"[DISPATCH] Generating comprehensive weather briefing for {depIcao} -> {arrIcao}", LogLevel.Debug);
@@ -2327,13 +2617,21 @@ namespace P3DWeatherEngineGUI
             var dispatchBriefing = new Models.SkyNexusBriefingModel { DepartureIcao = depIcao, ArrivalIcao = arrIcao };
             int highestCruiseSpd = 0;
 
+            // SAFELY EXTRACT DICTIONARY VARIABLES
+            int spd36k = 0, dir36k = 0, spd24k = 0, dir24k = 0, spd10k = 0, dir10k = 0;
+
             if (waypoints != null && waypoints.Count > 0)
             {
-                // CRITICAL FIX: Fetch the real-world winds for the midpoint of the route before calculating turbulence!
                 var midPoint = waypoints[waypoints.Count / 2];
                 await FetchWindsAloftAsync(midPoint.Latitude, midPoint.Longitude);
 
-                //mapControl.Children.Clear(); // Clears old map routes
+                // Populate extracted variables after await
+                spd36k = _windsCache.Layers.ContainsKey(360) ? _windsCache.Layers[360].Speed : 0;
+                dir36k = _windsCache.Layers.ContainsKey(360) ? _windsCache.Layers[360].Direction : 0;
+                spd24k = _windsCache.Layers.ContainsKey(240) ? _windsCache.Layers[240].Speed : 0;
+                dir24k = _windsCache.Layers.ContainsKey(240) ? _windsCache.Layers[240].Direction : 0;
+                spd10k = _windsCache.Layers.ContainsKey(100) ? _windsCache.Layers[100].Speed : 0;
+                dir10k = _windsCache.Layers.ContainsKey(100) ? _windsCache.Layers[100].Direction : 0;
 
                 double accumulatedDistance = 0;
                 System.Windows.Point previousPoint = new System.Windows.Point(waypoints[0].Latitude, waypoints[0].Longitude);
@@ -2341,17 +2639,16 @@ namespace P3DWeatherEngineGUI
                 for (int i = 0; i < waypoints.Count; i++)
                 {
                     var wp = waypoints[i];
-                    
                     if (i > 0) 
                     {
                         accumulatedDistance += CalculateDistanceNM(previousPoint.X, previousPoint.Y, wp.Latitude, wp.Longitude);
                         previousPoint = new System.Windows.Point(wp.Latitude, wp.Longitude);
                     }
 
-                    int jetSpd = _windsCache.Spd36k; 
+                    int jetSpd = spd36k;
                     if (jetSpd > highestCruiseSpd) highestCruiseSpd = jetSpd; 
 
-                    int shear = Math.Abs(_windsCache.Spd36k - _windsCache.Spd24k);
+                    int shear = Math.Abs(spd36k - spd24k);
                     string turbLevel = "Smooth";
                     System.Windows.Media.Brush segmentColor = System.Windows.Media.Brushes.LimeGreen;
 
@@ -2370,30 +2667,12 @@ namespace P3DWeatherEngineGUI
                             DistanceFromDep = Math.Round(accumulatedDistance)
                         });
                     }
-
-                   /*if (i > 0)
-                    {
-                        var prevWp = waypoints[i - 1];
-                        var segment = new System.Windows.Shapes.Polyline
-                        {
-                            Stroke = segmentColor,
-                            StrokeThickness = 3,
-                            // Ensure ConvertGeoToScreen matches your actual map conversion logic!
-                            Points = new System.Windows.Media.PointCollection 
-                            { 
-                                ConvertGeoToScreen(prevWp.Latitude, prevWp.Longitude), 
-                                ConvertGeoToScreen(wp.Latitude, wp.Longitude) 
-                            }
-                        };
-                        mapControl.Children.Add(segment);
-                    }*/
                 }
             }
 
-            // Update UI with the cached Winds Aloft
-            lblFpWind36k.Text = $"{_windsCache.Dir36k:D3} @ {_windsCache.Spd36k} kt";
-            lblFpWind24k.Text = $"{_windsCache.Dir24k:D3} @ {_windsCache.Spd24k} kt";
-            lblFpWind10k.Text = $"{_windsCache.Dir10k:D3} @ {_windsCache.Spd10k} kt";
+            lblFpWind36k.Text = $"{dir36k:D3} @ {spd36k} kt";
+            lblFpWind24k.Text = $"{dir24k:D3} @ {spd24k} kt";
+            lblFpWind10k.Text = $"{dir10k:D3} @ {spd10k} kt";
             
             if (highestCruiseSpd > 80)
             {
@@ -2640,5 +2919,356 @@ namespace P3DWeatherEngineGUI
             fpMapBrowser.NavigateToString(html);
         }
         #endregion
+
+        // ==============================================================================================
+        // --- EXPERIMENTAL WEATHER GRID PROOF-OF-CONCEPT ---
+        // Completely isolated. Memory-only stations. Does not modify global injection or database.
+        // ==============================================================================================
+        private async void BtnRunGridPoC_Click(object sender, RoutedEventArgs e)
+        {
+            if (simconnect == null)
+            {
+                LogEngineEvent("[PoC] SimConnect not connected. Cannot run grid experiment.", LogLevel.Normal);
+                return;
+            }
+
+            LogEngineEvent("[PoC] === STARTING WEATHER GRID EXPERIMENT ===", LogLevel.Normal);
+            
+            // VOML is roughly 12.96N, 74.89E. 
+            // We start the grid offshore at 13.5N, 73.0E and generate South-East.
+            double startLat = 13.5;
+            double startLon = 73.0;
+            
+            // 0.7 degrees of Lat/Lon is roughly 42 Nautical Miles, perfect for the transitions.
+            double spacing = 0.7; 
+
+            // 16 distinct weather profiles to force obvious interpolation testing
+            string[] testMetars = new string[]
+            {
+                "240600Z 09010KT 10SM CLR 30/20 A2992",                   // P001: Clear, East Wind
+                "240600Z 18018KT 10SM BKN030 28/22 A2980",                // P002: Broken, South Wind
+                "240600Z 27030KT 2SM TSRA BKN020CB 25/24 A2960",          // P003: Thunderstorm, West Wind
+                "240600Z 34008KT 1SM FG OVC002 22/21 A2990",              // P004: Fog, NW Wind
+                
+                "240600Z 04515KT 5SM HZ SCT040 32/18 A3000",              // P005: Haze/Scattered
+                "240600Z 12025KT 3SM +RA OVC015 24/23 A2975",             // P006: Heavy Rain
+                "240600Z 22005KT 10SM FEW250 33/20 A2995",                // P007: High Cirrus
+                "240600Z 31012KT 4SM SHRA SCT020TCU BKN040 26/24 A2985",  // P008: Showers
+
+                "240600Z 36020KT 10SM SCT025 29/19 A3005",                // P009: Scattered
+                "240600Z 08010KT 6SM BR OVC010 23/22 A2990",              // P010: Mist/Overcast
+                "240600Z 16035KT 1SM +TSRA OVC010CB 21/20 A2950",         // P011: Severe Storm
+                "240600Z 25015KT 10SM CLR 34/15 A2980",                   // P012: Clear
+
+                "240600Z 02008KT 10SM FEW030 31/22 A2992",                // P013: Few
+                "240600Z 10022KT 2SM RA BKN015 OVC030 25/24 A2970",       // P014: Rain/Broken
+                "240600Z 19014KT 10SM SCT030 BKN080 28/23 A2988",         // P015: Layered Clouds
+                "240600Z 28005KT 0SM FG VV001 20/20 A2995"                // P016: Dense Fog
+            };
+
+            // Prepare Javascript for Map injection (creates a dedicated cleanable layer)
+            string jsCommand = "if(typeof pocLayer !== 'undefined') { pocLayer.clearLayers(); } else { window.pocLayer = L.layerGroup().addTo(map); }\n";
+
+            int index = 0;
+            for (int row = 0; row < 4; row++)
+            {
+                for (int col = 0; col < 4; col++)
+                {
+                    index++;
+                    string icao = $"P{index:D3}"; // Formats as P001, P002...
+                    double lat = startLat - (row * spacing);
+                    double lon = startLon + (col * spacing);
+                    float elevation = 0f; // Sea level over the ocean
+
+                    LogEngineEvent($"[PoC] Creating Station {icao} at Lat: {lat:F4}, Lon: {lon:F4}, Elev: {elevation}ft", LogLevel.Normal);
+
+                    // 1. Create the temporary station dynamically using C# Reflection
+                    try 
+                    {
+                        var method = simconnect.GetType().GetMethods().FirstOrDefault(m => m.Name == "WeatherCreateStation");
+                        if (method != null)
+                        {
+                            var pInfos = method.GetParameters();
+                            object[] args = new object[pInfos.Length];
+                            int floatIndex = 0;
+                            int stringIndex = 0;
+                            
+                            for (int i = 0; i < pInfos.Length; i++)
+                            {
+                                var pType = pInfos[i].ParameterType;
+                                
+                                if (pType == typeof(System.Enum)) 
+                                    args[i] = System.DayOfWeek.Monday; // Dummy valid enum to satisfy RequestID
+                                else if (pType == typeof(uint) || pType == typeof(int)) 
+                                    args[i] = Convert.ChangeType(0, pType);
+                                else if (pType == typeof(string)) 
+                                {
+                                    args[i] = (stringIndex == 0) ? icao : $"PoC_Grid_{icao}";
+                                    stringIndex++;
+                                }
+                                else if (pType == typeof(float)) 
+                                {
+                                    if (floatIndex == 0) args[i] = (float)lat;
+                                    else if (floatIndex == 1) args[i] = (float)lon;
+                                    else if (floatIndex == 2) args[i] = (float)elevation;
+                                    else args[i] = 0f;
+                                    floatIndex++;
+                                }
+                                else if (pType == typeof(double)) 
+                                {
+                                    if (floatIndex == 0) args[i] = lat;
+                                    else if (floatIndex == 1) args[i] = lon;
+                                    else if (floatIndex == 2) args[i] = (double)elevation;
+                                    else args[i] = 0.0;
+                                    floatIndex++;
+                                }
+                                else 
+                                {
+                                    args[i] = pType.IsValueType ? Activator.CreateInstance(pType) : null;
+                                }
+                            }
+                            method.Invoke(simconnect, args);
+                        }
+                        else
+                        {
+                            LogEngineEvent($"[PoC ERROR] Method WeatherCreateStation not found in your DLL.", LogLevel.Debug);
+                        }
+                    } 
+                    catch (Exception ex) 
+                    {
+                        LogEngineEvent($"[PoC ERROR] Failed to create station {icao}: {ex.Message}", LogLevel.Debug);
+                    }
+
+                    // 2. Inject Weather immediately using standard pipeline
+                    string baseMetar = testMetars[index - 1];
+                    string fullMetar = $"{icao} {baseMetar}";
+                    
+                    LogEngineEvent($"[PoC] Injecting Weather {icao} -> {fullMetar}", LogLevel.Normal);
+                    
+                    try {
+                        // 0 second blend time is vital here to establish the static geographic cell immediately
+                        simconnect.WeatherSetObservation(0, fullMetar);
+                    }
+                    catch (Exception ex) {
+                        LogEngineEvent($"[PoC ERROR] Failed to inject weather for {icao}: {ex.Message}", LogLevel.Debug);
+                    }
+
+                    // 3. Draw bounding square and center dot on the map
+                    string popupHtml = $"<div class='pop-title'>{icao} - GRID TEST</div><div class='pop-row'>{baseMetar}</div>";
+                    jsCommand += $@"
+                        var bounds_{icao} = [[{lat - (spacing/2)}, {lon - (spacing/2)}], [{lat + (spacing/2)}, {lon + (spacing/2)}]];
+                        L.rectangle(bounds_{icao}, {{color: '#10B981', weight: 1, fillOpacity: 0.05, dashArray: '4,4'}}).addTo(window.pocLayer);
+                        
+                        var marker_{icao} = L.circleMarker([{lat}, {lon}], {{ radius: 4, color: '#10B981', weight: 2, fillOpacity: 1 }}).addTo(window.pocLayer);
+                        marker_{icao}.bindPopup(`{popupHtml}`);
+                        marker_{icao}.bindTooltip('{icao}', {{permanent: true, direction: 'right', className: 'poc-label', offset: [5,0]}});
+                    ";
+
+                    await Task.Delay(150); // Prevents flooding the COM pipeline
+                }
+            }
+
+            // 4. Push Map Updates to UI
+            if (fullMapBrowser != null && fullMapBrowser.CoreWebView2 != null)
+            {
+                // Injects a CSS class to make the station text labels clean and transparent on the map
+                string styleInjection = "if(!document.getElementById('pocStyles')) { var style = document.createElement('style'); style.id='pocStyles'; style.innerHTML = '.poc-label { background: transparent; border: none; color: #10B981; font-weight: bold; box-shadow: none; text-shadow: 1px 1px 2px black; }'; document.head.appendChild(style); }";
+                _ = fullMapBrowser.CoreWebView2.ExecuteScriptAsync(styleInjection + jsCommand);
+                LogEngineEvent("[PoC] Rendered 16 weather cells onto the Live Tracking map.", LogLevel.Normal);
+            }
+
+            LogEngineEvent("[PoC] === WEATHER GRID EXPERIMENT COMPLETE ===", LogLevel.Normal);
+        }
+    }
+    // ==============================================================================================
+    // --- SKYGRID: ROUTE-CENTRIC WEATHER CORRIDOR ARCHITECTURE ---
+    // ==============================================================================================
+    public enum CellState { UNLOADED, REQUESTING, READY, INJECTED, STALE, DISCARDED }
+    public enum CellPriority { Priority1, Priority2, Priority3 }
+
+    public class SkyGridCell
+    {
+        public string CellID { get; set; }
+        public double CenterLat { get; set; }
+        public double CenterLon { get; set; }
+        public CellPriority Priority { get; set; }
+        public double DistanceAlongRoute { get; set; }
+        public CellState State { get; set; } = CellState.UNLOADED;
+    }
+
+    public class SkyGridManager
+    {
+        public System.Collections.Generic.List<SkyGridCell> Cells { get; private set; } = new System.Collections.Generic.List<SkyGridCell>();
+        private Action<string, MainWindow.LogLevel> _logEngineEvent;
+        private SimConnect _simconnect;
+
+        public SkyGridManager(Action<string, MainWindow.LogLevel> logger, SimConnect simconnect)
+        {
+            _logEngineEvent = logger;
+            _simconnect = simconnect;
+        }
+
+        public void GenerateGridFromRoute(System.Collections.Generic.List<Waypoint> route)
+        {
+            Cells.Clear();
+            if (route == null || route.Count < 2) return;
+
+            _logEngineEvent("[SKYGRID] Architecting route-centric weather corridor...", MainWindow.LogLevel.Normal);
+
+            double accumulatedDistance = 0;
+            double cellSpacingNm = 40.0; 
+            int cellIndex = 1;
+
+            for (int i = 0; i < route.Count - 1; i++)
+            {
+                var wp1 = route[i];
+                var wp2 = route[i + 1];
+                double segmentDist = CalculateDistanceNM(wp1.Latitude, wp1.Longitude, wp2.Latitude, wp2.Longitude);
+                double bearing = CalculateBearing(wp1.Latitude, wp1.Longitude, wp2.Latitude, wp2.Longitude);
+
+                for (double d = 0; d < segmentDist; d += cellSpacingNm)
+                {
+                    var center = PointFromDistanceAndBearing(wp1.Latitude, wp1.Longitude, d, bearing);
+                    double cellRouteDist = accumulatedDistance + d;
+                    
+                    Cells.Add(new SkyGridCell { CellID = $"C{cellIndex:D3}", CenterLat = center.Lat, CenterLon = center.Lon, Priority = CellPriority.Priority1, DistanceAlongRoute = cellRouteDist });
+                    
+                    var left = PointFromDistanceAndBearing(center.Lat, center.Lon, cellSpacingNm, bearing - 90);
+                    var right = PointFromDistanceAndBearing(center.Lat, center.Lon, cellSpacingNm, bearing + 90);
+
+                    Cells.Add(new SkyGridCell { CellID = $"L{cellIndex:D3}", CenterLat = left.Lat, CenterLon = left.Lon, Priority = CellPriority.Priority2, DistanceAlongRoute = cellRouteDist });
+                    Cells.Add(new SkyGridCell { CellID = $"R{cellIndex:D3}", CenterLat = right.Lat, CenterLon = right.Lon, Priority = CellPriority.Priority2, DistanceAlongRoute = cellRouteDist });
+                    cellIndex++;
+                }
+                accumulatedDistance += segmentDist;
+            }
+
+            _logEngineEvent($"[SKYGRID] Spatial Hashing Complete: Generated {Cells.Count} inactive grid cells spanning a {accumulatedDistance:F0} NM corridor.", MainWindow.LogLevel.Normal);
+            // Revert to non-async dummy generation so the Map UI renders instantly without waiting for API calls!
+            _ = UpdateStreamingWindowAsync(route[0].Latitude, route[0].Longitude, null);
+        }
+
+        public void UpdateStreamingWindow(double acftLat, double acftLon)
+        {
+            _ = UpdateStreamingWindowAsync(acftLat, acftLon, null);
+        }
+
+        public async Task UpdateStreamingWindowAsync(double acftLat, double acftLon, Func<double, double, string, Task<string>> fetchMetarCallback)
+        {
+            if (Cells.Count == 0) return;
+
+            var closest = Cells.Where(c => c.Priority == CellPriority.Priority1)
+                               .OrderBy(c => CalculateDistanceNM(acftLat, acftLon, c.CenterLat, c.CenterLon))
+                               .FirstOrDefault();
+
+            if (closest == null) return;
+
+            double acftRouteDist = closest.DistanceAlongRoute;
+            double windowStart = acftRouteDist - 300;
+            double windowEnd = acftRouteDist + 600;
+
+            int newlyLoaded = 0;
+            int discarded = 0;
+
+            foreach (var cell in Cells)
+            {
+                if (cell.DistanceAlongRoute >= windowStart && cell.DistanceAlongRoute <= windowEnd)
+                {
+                    if (cell.State == CellState.UNLOADED)
+                    {
+                        cell.State = CellState.REQUESTING; 
+
+                        if (_simconnect != null)
+                        {
+                            try 
+                            {
+                                var method = _simconnect.GetType().GetMethods().FirstOrDefault(m => m.Name == "WeatherCreateStation");
+                                if (method != null)
+                                {
+                                    var pInfos = method.GetParameters();
+                                    object[] args = new object[pInfos.Length];
+                                    int floatIndex = 0, stringIndex = 0;
+                                    
+                                    for (int i = 0; i < pInfos.Length; i++)
+                                    {
+                                        var pType = pInfos[i].ParameterType;
+                                        if (pType == typeof(System.Enum)) args[i] = System.DayOfWeek.Monday;
+                                        else if (pType == typeof(uint) || pType == typeof(int)) args[i] = Convert.ChangeType(0, pType);
+                                        else if (pType == typeof(string)) { args[i] = (stringIndex == 0) ? cell.CellID : $"SkyGrid_{cell.CellID}"; stringIndex++; }
+                                        else if (pType == typeof(float)) { args[i] = floatIndex == 0 ? (float)cell.CenterLat : floatIndex == 1 ? (float)cell.CenterLon : 0f; floatIndex++; }
+                                        else if (pType == typeof(double)) { args[i] = floatIndex == 0 ? cell.CenterLat : floatIndex == 1 ? cell.CenterLon : 0.0; floatIndex++; }
+                                        else args[i] = pType.IsValueType ? Activator.CreateInstance(pType) : null;
+                                    }
+                                    method.Invoke(_simconnect, args);
+                                }
+                            } catch { }
+                        }
+
+                        // CRITICAL FIX: Give P3D time to build the SkyGrid cell!
+                        await Task.Delay(500);
+
+                        // Use the injected C# Delegate to pull the real Open-Meteo weather!
+                        string fullP3dMetar = null;
+                        if (fetchMetarCallback != null)
+                        {
+                            fullP3dMetar = await fetchMetarCallback(cell.CenterLat, cell.CenterLon, cell.CellID);
+                        }
+                        if (fullP3dMetar == null) fullP3dMetar = $"{cell.CellID} 240600Z 00000KT 10SM CLR 15/10 A2992";
+
+                        cell.State = CellState.READY; 
+                        
+                        if (_simconnect != null) {
+                            try {
+                                _simconnect.WeatherSetObservation(0, fullP3dMetar);
+                                cell.State = CellState.INJECTED;
+                            } catch { }
+                        }
+                        newlyLoaded++;
+                    }
+                }
+                else if (cell.DistanceAlongRoute < windowStart - 100)
+                {
+                    if (cell.State == CellState.READY || cell.State == CellState.INJECTED)
+                    {
+                        cell.State = CellState.DISCARDED;
+                        discarded++;
+                    }
+                }
+            }
+
+            if (newlyLoaded > 0 || discarded > 0)
+            {
+                _logEngineEvent($"[SKYGRID] Streaming Pipeline: Processed {newlyLoaded} new cells ahead. Discarded {discarded} stale cells behind.", MainWindow.LogLevel.Debug);
+            }
+        }
+
+        private double CalculateDistanceNM(double lat1, double lon1, double lat2, double lon2)
+        {
+            var d1 = lat1 * (Math.PI / 180.0); var num1 = lon1 * (Math.PI / 180.0);
+            var d2 = lat2 * (Math.PI / 180.0); var num2 = lon2 * (Math.PI / 180.0) - num1;
+            var d3 = Math.Pow(Math.Sin((d2 - d1) / 2.0), 2.0) + Math.Cos(d1) * Math.Cos(d2) * Math.Pow(Math.Sin(num2 / 2.0), 2.0);
+            return 3440.065 * (2.0 * Math.Atan2(Math.Sqrt(d3), Math.Sqrt(1.0 - d3)));
+        }
+
+        private double CalculateBearing(double lat1, double lon1, double lat2, double lon2)
+        {
+            double dL = (lon2 - lon1) * Math.PI / 180.0;
+            lat1 = lat1 * Math.PI / 180.0; lat2 = lat2 * Math.PI / 180.0;
+            double x = Math.Sin(dL) * Math.Cos(lat2);
+            double y = Math.Cos(lat1) * Math.Sin(lat2) - Math.Sin(lat1) * Math.Cos(lat2) * Math.Cos(dL);
+            return ((Math.Atan2(x, y) * 180.0 / Math.PI) + 360) % 360;
+        }
+
+        private (double Lat, double Lon) PointFromDistanceAndBearing(double lat, double lon, double distNm, double bearingDeg)
+        {
+            double dR = distNm / 3440.065; 
+            double bR = bearingDeg * Math.PI / 180.0;
+            double lat1 = lat * Math.PI / 180.0; double lon1 = lon * Math.PI / 180.0;
+
+            double lat2 = Math.Asin(Math.Sin(lat1) * Math.Cos(dR) + Math.Cos(lat1) * Math.Sin(dR) * Math.Cos(bR));
+            double lon2 = lon1 + Math.Atan2(Math.Sin(bR) * Math.Sin(dR) * Math.Cos(lat1), Math.Cos(dR) - Math.Sin(lat1) * Math.Sin(lat2));
+
+            return (lat2 * 180.0 / Math.PI, lon2 * 180.0 / Math.PI);
+        }
     }
 }

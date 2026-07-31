@@ -23,7 +23,7 @@
                     <!-- Bottom Left: Logo & Version -->
                     <StackPanel HorizontalAlignment="Left" VerticalAlignment="Bottom">
                         <Image Source="pack://application:,,,/logo2.png" Width="140" HorizontalAlignment="Left" RenderOptions.BitmapScalingMode="HighQuality" Margin="-9,0,0,5"/>
-                        <TextBlock Text="v2.4" Foreground="#A0A0A0" FontFamily="Consolas" FontSize="13" FontWeight="Bold" Margin="4,0,0,0">
+                        <TextBlock Text="v2.6" Foreground="#A0A0A0" FontFamily="Consolas" FontSize="13" FontWeight="Bold" Margin="4,0,0,0">
                             <!-- Adds a subtle drop shadow to the text so it is readable on bright clouds -->
                             <TextBlock.Effect>
                                 <DropShadowEffect BlurRadius="4" ShadowDepth="2" Opacity="0.8" Color="Black" />

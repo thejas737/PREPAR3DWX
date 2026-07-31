@@ -1,7 +1,7 @@
 System.InvalidOperationException: Collection was modified; enumeration operation may not execute.
    at System.Collections.Generic.HashSet`1.Enumerator.MoveNext()
-   at P3DWeatherEngineGUI.MainWindow.SyncRouteWithVatsimAsync() in C:\Users\Thejas Jagadeesh\Documents\Thejas Jagadeesh\P3DWeatherEngine\P3DWeatherEngineGUI\MainWindow.xaml.cs:line 1527
-   at P3DWeatherEngineGUI.MainWindow.<InitializeVatsimRouteSync>b__82_0(Object s, EventArgs e) in C:\Users\Thejas Jagadeesh\Documents\Thejas Jagadeesh\P3DWeatherEngine\P3DWeatherEngineGUI\MainWindow.xaml.cs:line 1506
+   at P3DWeatherEngineGUI.MainWindow.SyncRouteWithVatsimAsync() in C:\Users\Thejas Jagadeesh\Documents\Thejas Jagadeesh\P3DWeatherEngine\P3DWeatherEngineGUI\MainWindow.xaml.cs:line 2075
+   at P3DWeatherEngineGUI.MainWindow.<InitializeVatsimRouteSync>b__102_0(Object s, EventArgs e) in C:\Users\Thejas Jagadeesh\Documents\Thejas Jagadeesh\P3DWeatherEngine\P3DWeatherEngineGUI\MainWindow.xaml.cs:line 2055
    at System.Threading.Tasks.Task.<>c.<ThrowAsync>b__128_0(Object state)
    at System.Windows.Threading.ExceptionWrapper.InternalRealCall(Delegate callback, Object args, Int32 numArgs)
    at System.Windows.Threading.ExceptionWrapper.TryCatchWhen(Object source, Delegate callback, Object args, Int32 numArgs, Delegate catchHandler)
@@ -14,6 +14,7 @@ System.InvalidOperationException: Collection was modified; enumeration operation
    at System.Windows.Threading.DispatcherOperation.Invoke()
    at System.Windows.Threading.Dispatcher.ProcessQueue()
    at System.Windows.Threading.Dispatcher.WndProcHook(IntPtr hwnd, Int32 msg, IntPtr wParam, IntPtr lParam, Boolean& handled)
+   at MS.Win32.HwndWrapper.WndProc(IntPtr hwnd, Int32 msg, IntPtr wParam, IntPtr lParam, Boolean& handled)
    at System.Windows.Threading.ExceptionWrapper.InternalRealCall(Delegate callback, Object args, Int32 numArgs)
    at System.Windows.Threading.ExceptionWrapper.TryCatchWhen(Object source, Delegate callback, Object args, Int32 numArgs, Delegate catchHandler)
    at System.Windows.Threading.Dispatcher.LegacyInvokeImpl(DispatcherPriority priority, TimeSpan timeout, Delegate method, Object args, Int32 numArgs)

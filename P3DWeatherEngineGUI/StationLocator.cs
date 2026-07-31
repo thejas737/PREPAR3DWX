@@ -79,6 +79,15 @@ namespace P3DWeatherEngine
             Console.WriteLine($"Loaded {_stations.Count} weather stations.");
         }
 
+        public WeatherStation? GetStationByIcao(string icao)
+        {
+            if (string.IsNullOrEmpty(icao)) return null;
+            
+            // NOTE: Change "_stations" to whatever your internal list/array 
+            // of WeatherStations is named inside this class!
+            return _stations.FirstOrDefault(s => s.ICAO != null && s.ICAO.Equals(icao, StringComparison.OrdinalIgnoreCase));
+        }
+
         public List<(WeatherStation Station, double Distance)> GetNearestStations(
             double planeLat,
             double planeLon,
