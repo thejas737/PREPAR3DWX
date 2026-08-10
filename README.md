@@ -52,7 +52,7 @@ To compile the source code into a standalone, runnable executable file (.exe), f
 
 -Once the build process completes successfully, navigate to the output directory to locate your executable:
 
-*C:\Users\(User)\Documents\(User)\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
+*C:\Users\\(User)\Documents\\(User)\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
 
 (NOTE: If u cant find it in the location given above, the donet run publish command will return the final build path, just copy paste it onto your windows explorer)
 Inside this folder, you will find SkyNexus.exe along with its required .dll files. You can move this entire folder to any location on your system to use the weather engine.
