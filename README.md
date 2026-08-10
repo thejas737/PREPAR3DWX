@@ -45,11 +45,14 @@ To compile the source code into a standalone, runnable executable file (.exe), f
 -Open your terminal or command prompt and navigate to the project directory as shown above.
 
 -Run the following publish command to bundle the application for 64-bit Windows:
+
 *dotnet publish -c Release -r win-x64 --self-contained false*
+
 (Note: Change --self-contained false to true if you wish to bundle the .NET runtime directly into the application. This increases the total file size but eliminates the need for the end-user to install .NET separately).
 
 -Once the build process completes successfully, navigate to the output directory to locate your executable:
 
 *C:\Users\(User)\Documents\(User)\P3DWeatherEngine\P3DWeatherEngineGUI\bin\Release\net8.0-windows\win-x64\publish*
+
 (NOTE: If u cant find it in the location given above, the donet run publish command will return the final build path, just copy paste it onto your windows explorer)
 Inside this folder, you will find SkyNexus.exe along with its required .dll files. You can move this entire folder to any location on your system to use the weather engine.
