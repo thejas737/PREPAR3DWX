@@ -23,7 +23,6 @@ SimBrief Integration: One-click import of operational flight plans (OFP). Automa
 Interactive Meteorology Map: A dedicated, Leaflet-powered layered map engine that renders the flight route, tracks the aircraft position in real-time, and dynamically plots both established METAR stations and actively streaming SkyGrid pseudo-cells.
 
 Dynamic Winds Aloft Engine: Generates a dense, multi-level atmospheric profile (FL100, FL240, FL360) directly mapped to the localized weather cells.
----
 
 ## Important Notice: Source Code Only
 
