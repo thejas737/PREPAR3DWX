@@ -28,7 +28,7 @@ Dynamic Winds Aloft Engine: Generates a dense, multi-level atmospheric profile (
 
 This repository contains the raw source code for SkyNexus. There is no pre-compiled executable included. To use this application, you must run it via the .NET CLI or compile it into a standalone executable. 
 
-## -------------------------------------------------------- INSTALLATION INSTRUCTIONS ----------------------------------------------------------------------------
+## ----------------------- INSTALLATION INSTRUCTIONS -------------------------------
 To download the source code, make sure to install the 'P3DWeatherEngineGUI' as a .zip file then follow the instructions listed below.
 
 ## Prerequisites
